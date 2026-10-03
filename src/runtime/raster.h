@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <array>
+#include <memory>
 #include <vector>
 
 namespace rt {
@@ -37,6 +38,7 @@ struct VideoMem {
 class Raster {
 public:
     Raster();
+    ~Raster();
 
     // MAME render_polygons: clear, then draw windows from the last down to
     // 0, each in z-bucket order (low to high z; newest first within a
@@ -97,12 +99,21 @@ private:
     // Cleared logically every render: palette/luma/translation RAM may change
     // between frames. A pointer is used only while its polygon is being drawn.
     std::array<ShadeEntry, 64> shades_;
-    const uint32_t *shade_table(const Extra &o);
+    const uint32_t *shade_table(const Extra &o, ShadeEntry *shades_table = nullptr);
     std::vector<std::size_t> order_;
+#if defined(__SWITCH__)
+    class RasterWorker;
+    std::unique_ptr<RasterWorker> worker_;
+    std::array<ShadeEntry, 64> worker_shades_;
+#endif
 #endif
 
     void render_one(GeoPoly poly, int crtc_x, int crtc_y, int render_x, int render_y, int clip_minx, int clip_maxx,
-                    int clip_miny, int clip_maxy);
+                    int clip_miny, int clip_maxy
+#ifdef M2_VITA_RENDER_OPT
+                    , ShadeEntry *thread_shades = nullptr
+#endif
+    );
     template <bool Translucent> void draw_scanline_solid(int32_t y, int32_t x0, int32_t x1, const float *start, const float *dpdx, const Extra &o);
     template <bool Translucent> void draw_scanline_tex(int32_t y, int32_t x0, int32_t x1, const float *start, const float *dpdx, const Extra &o);
     template <bool Translucent, bool Cached> void draw_tex_span(int32_t y, int32_t x0, int32_t x1,

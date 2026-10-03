@@ -21,6 +21,18 @@
 #include <limits>
 #include <numeric>
 
+#if defined(__SWITCH__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#include <switch.h>
+#pragma GCC diagnostic pop
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+#include <thread>
+#endif
+
 namespace rt {
 
 namespace {
@@ -105,16 +117,87 @@ struct Raster::Extra {
     Level levels[13]; // 0 = microtexture, 1..12 = mip levels 0..11
     s32 max_level = 0;
     mutable const u32 *shades = nullptr;
+    ShadeEntry *shades_table = nullptr;
 #endif
 };
 
+#if defined(__SWITCH__)
+class Raster::RasterWorker {
+public:
+    RasterWorker() {
+        running_ = true;
+        thread_ = std::thread(&RasterWorker::loop, this);
+    }
+    ~RasterWorker() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            running_ = false;
+            has_work_ = true;
+        }
+        cv_work_.notify_one();
+        if (thread_.joinable()) thread_.join();
+    }
+
+    void start(std::function<void()> task) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            task_ = std::move(task);
+            has_work_ = true;
+            done_ = false;
+        }
+        cv_work_.notify_one();
+    }
+
+    void wait() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_done_.wait(lock, [this]() { return done_; });
+    }
+
+private:
+    void loop() {
+        // Pin worker thread to Core 2 (dedicated user core)
+        svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, 0b0111);
+        svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2C);
+
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (running_) {
+            cv_work_.wait(lock, [this]() { return has_work_; });
+            if (!running_) break;
+            has_work_ = false;
+            auto task = std::move(task_);
+            lock.unlock();
+
+            if (task) task();
+
+            lock.lock();
+            done_ = true;
+            cv_done_.notify_one();
+        }
+    }
+
+    std::thread thread_;
+    std::mutex mutex_;
+    std::condition_variable cv_work_;
+    std::condition_variable cv_done_;
+    std::function<void()> task_;
+    bool running_ = false;
+    bool has_work_ = false;
+    bool done_ = true;
+};
+#endif
+
 Raster::Raster() : dest_(512 * 512), fill_(512 * 512) {
+#if defined(__SWITCH__)
+    worker_ = std::make_unique<RasterWorker>();
+#endif
     // MAME video_start
     for (int i = 0; i < 256; i++) {
         double raw_value = std::max((double(i) - 64.0) * 255.0 / 191.0, 0.0);
         gamma_[i] = u8(raw_value);
     }
 }
+
+Raster::~Raster() = default;
 
 void Raster::set_wide_margin(int margin) {
     margin_ = std::max(margin, 0);
@@ -161,8 +244,45 @@ void Raster::render(const std::vector<GeoPoly> &polys, int windows, const VideoM
         if (polys[a].z != polys[b].z) return polys[a].z < polys[b].z;
         return a > b;
     });
+#if defined(__SWITCH__)
+    if (worker_) {
+        constexpr int kSlices = 8;
+        constexpr int kSliceHeight = 48;
+        std::atomic<int> next_slice{0};
+
+        auto do_slices = [&](ShadeEntry *thread_shades) {
+            for (;;) {
+                const int s = next_slice.fetch_add(1, std::memory_order_relaxed);
+                if (s >= kSlices) break;
+                const int s_miny = std::max(clip_miny, s * kSliceHeight);
+                const int s_maxy = std::min(clip_maxy, (s + 1) * kSliceHeight - 1);
+                if (s_miny > s_maxy) continue;
+                for (size_t i : order) {
+                    if (polys[i].window <= windows) {
+                        render_one(polys[i], crtc_x, crtc_y, render_x, render_y,
+                                   clip_minx, clip_maxx, s_miny, s_maxy, thread_shades);
+                    }
+                }
+            }
+        };
+
+        for (auto &entry : worker_shades_) entry.key = 0xffffffffu;
+
+        worker_->start([&]() {
+            do_slices(worker_shades_.data());
+        });
+
+        do_slices(shades_.data());
+
+        worker_->wait();
+    } else {
+        for (size_t i : order)
+            if (polys[i].window <= windows) render_one(polys[i], crtc_x, crtc_y, render_x, render_y, clip_minx, clip_maxx, clip_miny, clip_maxy);
+    }
+#else
     for (size_t i : order)
         if (polys[i].window <= windows) render_one(polys[i], crtc_x, crtc_y, render_x, render_y, clip_minx, clip_maxx, clip_miny, clip_maxy);
+#endif
 }
 
 int Raster::coverage_estimate(const std::vector<GeoPoly> &polys, int windows, int crtc_x, int crtc_y) const {
@@ -222,7 +342,11 @@ bool Raster::find_race_hud(const std::vector<GeoPoly> &polys, int crtc_x, int cr
 }
 
 void Raster::render_one(GeoPoly poly, int crtc_x, int crtc_y, int render_x, int render_y, int clip_minx, int clip_maxx,
-                        int clip_miny, int clip_maxy) {
+                        int clip_miny, int clip_maxy
+#ifdef M2_VITA_RENDER_OPT
+                        , ShadeEntry *thread_shades
+#endif
+) {
     // Widescreen: a viewport spanning the screen extends into the side margins.
     const int wide = margin_ && poly.viewport[0] <= 0 && poly.viewport[2] >= 495 ? margin_ : 0;
     // model2_3d_project
@@ -262,6 +386,9 @@ void Raster::render_one(GeoPoly poly, int crtc_x, int crtc_y, int render_x, int 
     extra.colorbase = (poly.texheader[3] >> 6) & 0x3ff;
     extra.luma = poly.luma;
     extra.texlod = poly.texlod;
+#ifdef M2_VITA_RENDER_OPT
+    extra.shades_table = thread_shades ? thread_shades : shades_.data();
+#endif
 
     if (renderer & 2) {
         extra.texmirrorx = (poly.texheader[0] >> 8) & 1;
@@ -306,10 +433,11 @@ void Raster::render_one(GeoPoly poly, int crtc_x, int crtc_y, int render_x, int 
 }
 
 #ifdef M2_VITA_RENDER_OPT
-const uint32_t *Raster::shade_table(const Extra &o) {
+const uint32_t *Raster::shade_table(const Extra &o, ShadeEntry *shades_table) {
+    ShadeEntry *shades = shades_table ? shades_table : (o.shades_table ? o.shades_table : shades_.data());
     const u32 color = le16(mem_->palram, o.colorbase + 0x1000) & 0x7fff;
     const u32 key = color | (u32(o.luma) << 15) | ((o.lumabase >> 7) << 23);
-    auto &entry = shades_[(key * 2654435761u) >> 26];
+    auto &entry = shades[(key * 2654435761u) >> 26];
     if (entry.key != key) {
         const u32 cr = ((color >> 0) & 0x1f) << 8;
         const u32 cg = 0x4000 / 2 + (((color >> 5) & 0x1f) << 8);
@@ -589,7 +717,7 @@ void Raster::draw_scanline_tex(int32_t y, int32_t x0, int32_t x1, const float *s
     // Building 128 shades for a four-pixel polygon is a regression. Short
     // spans retain the original lighting equations; wider spans amortize a
     // table and subsequent rows reuse it. This chooses work, not image quality.
-    if (!o.shades && x1 - x0 >= 32) o.shades = shade_table(o);
+    if (!o.shades && x1 - x0 >= 16) o.shades = shade_table(o, o.shades_table);
     if (o.shades) { draw_tex_span<Translucent, true>(y, x0, x1, start, dpdx, o); return; }
 #endif
     draw_tex_span<Translucent, false>(y, x0, x1, start, dpdx, o);
