@@ -16,6 +16,13 @@
 #include <cmath>
 #include <cstring>
 
+#if defined(__SWITCH__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#include <switch.h>
+#pragma GCC diagnostic pop
+#endif
+
 namespace rt {
 
 namespace {
@@ -27,7 +34,7 @@ inline uint32_t rgb(uint32_t r, uint32_t g, uint32_t b) { return 0xff000000u | (
 } // namespace
 
 Video::Video(const uint8_t *tile_ram, const uint8_t *char_ram)
-    : tile_ram_(tile_ram), char_ram_(char_ram), screen_(size_t(W) * H), sys24_(size_t(W) * (H + 4)),
+    : tile_src_(tile_ram), pen_tab_(pens_), tile_ram_(tile_ram), char_ram_(char_ram), screen_(size_t(W) * H), sys24_(size_t(W) * (H + 4)),
       background_gpu_(size_t(W) * H), foreground_gpu_(size_t(W) * H), gpu_tile_words_(kGpuTileWords),
       gpu_pens_(kGpuPens) {
     static uint64_t instances = 0;
@@ -48,6 +55,67 @@ Video::Video(const uint8_t *tile_ram, const uint8_t *char_ram)
     tile_values_.resize(4 * 4096);
     background_.resize(size_t(W) * (H + 4));
 #endif
+}
+
+Video::~Video() { set_threaded(false); }
+
+void Video::set_threaded(bool on) {
+    if (on == threaded_) return;
+    if (!on) {
+        sync();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            quit_ = true;
+        }
+        cv_.notify_all();
+        if (worker_.joinable()) worker_.join();
+        quit_ = false;
+        screen_ = display_; // keep showing the last finished picture
+        threaded_ = false;
+        tile_src_ = tile_ram_;
+        pen_tab_ = pens_;
+        return;
+    }
+    tile_snap_.resize(0x10000);
+    palram_snap_.resize(0x4000);
+    xlat_snap_.resize(0xc000);
+    luma_snap_.resize(0x20000);
+    pens_snap_.resize(8192);
+    display_ = screen_;
+    threaded_ = true;
+    worker_ = std::thread(&Video::worker_loop, this);
+}
+
+void Video::sync() const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait(lock, [this] { return !job_pending_ && !job_busy_; });
+}
+
+void Video::worker_loop() {
+#if defined(__SWITCH__)
+    // Prefers core 1; may use core 0 when the emulation thread idles (it has
+    // the higher priority there).
+    svcSetThreadCoreMask(CUR_THREAD_HANDLE, 1, 0b0111);
+    svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2C);
+#endif
+    std::unique_lock<std::mutex> lock(mutex_);
+    for (;;) {
+        cv_.wait(lock, [this] { return job_pending_ || quit_; });
+        if (job_pending_) {
+            job_pending_ = false;
+            job_busy_ = true;
+            const Job job = job_;
+            lock.unlock();
+            VideoProfile profile{};
+            compose(job, profile);
+            lock.lock();
+            job_profile_ = profile;
+            job_busy_ = false;
+            cv_.notify_all();
+            continue;
+        }
+        if (quit_) return;
+    }
 }
 
 void Video::palette_w(uint32_t offset, const uint8_t *palram, const uint8_t *colorxlat) {
@@ -220,7 +288,7 @@ void Video::draw_rect(std::vector<uint32_t> &dm, const uint16_t *mask, uint16_t 
             if (!cur_x && llx >= 128) {
                 if (!m) {
                     for (int x = 0; x < 128; x++) {
-                        if (*srct++ == tpri || (flags & DRAW_OPAQUE)) *dst = pens_[*src];
+                        if (*srct++ == tpri || (flags & DRAW_OPAQUE)) *dst = pen_tab_[*src];
                         src++;
                         dst++;
                     }
@@ -232,7 +300,7 @@ void Video::draw_rect(std::vector<uint32_t> &dm, const uint16_t *mask, uint16_t 
                     for (int x = 0; x < 128; x += 8) {
                         if (!(m & 0x8000))
                             for (int xx = 0; xx < 8; xx++)
-                                if (srct[xx] == tpri || (flags & DRAW_OPAQUE)) dst[xx] = pens_[src[xx]];
+                                if (srct[xx] == tpri || (flags & DRAW_OPAQUE)) dst[xx] = pen_tab_[src[xx]];
                         src += 8;
                         srct += 8;
                         dst += 8;
@@ -243,7 +311,7 @@ void Video::draw_rect(std::vector<uint32_t> &dm, const uint16_t *mask, uint16_t 
                 const int llx1 = llx >= 128 ? 128 : llx;
                 if (!m) {
                     for (int x = cur_x; x < llx1; x++) {
-                        if (*srct++ == tpri || (flags & DRAW_OPAQUE)) *dst = pens_[*src];
+                        if (*srct++ == tpri || (flags & DRAW_OPAQUE)) *dst = pen_tab_[*src];
                         src++;
                         dst++;
                     }
@@ -253,7 +321,7 @@ void Video::draw_rect(std::vector<uint32_t> &dm, const uint16_t *mask, uint16_t 
                     dst += 128 - cur_x;
                 } else {
                     for (int x = cur_x; x < llx1; x++) {
-                        if ((*srct++ == tpri || (flags & DRAW_OPAQUE)) && !(m & (0x8000 >> (x >> 3)))) *dst = pens_[*src];
+                        if ((*srct++ == tpri || (flags & DRAW_OPAQUE)) && !(m & (0x8000 >> (x >> 3)))) *dst = pen_tab_[*src];
                         src++;
                         dst++;
                     }
@@ -279,7 +347,7 @@ void Video::tilemap_draw(std::vector<uint32_t> &dm, int L, int sx, int sy, int m
     for (int y = std::max(miny, 0); y <= std::min(maxy, H - 1); y++)
         for (int x = std::max(minx, 0); x <= std::min(maxx, dw_ - 1); x++) {
             const size_t i = size_t((y + sy) & 511) * 512 + size_t((x + sx) & 511);
-            if ((flags_[L][i] & mask) == value) dm[size_t(y) * size_t(dw_) + size_t(x)] = pens_[pixmap_[L][i]];
+            if ((flags_[L][i] & mask) == value) dm[size_t(y) * size_t(dw_) + size_t(x)] = pen_tab_[pixmap_[L][i]];
         }
 }
 
@@ -397,11 +465,27 @@ const std::vector<GeoPoly> &Video::gpu_polys() const {
 }
 
 void Video::screen_update(const std::vector<GeoPoly> &polys, int windows, const VideoMem &mem) {
+    // Threaded drawing only on the plain CPU path (see set_threaded).
+    const bool threaded = threaded_ && !margin_ && !external_3d_;
+    VideoProfile drawn{};
+    if (threaded_) {
+        sync();
+        drawn = job_profile_; // the previous update's drawing
+        std::swap(screen_, display_);
+    }
     gpu_polys_ = &polys;
     gpu_windows_ = windows;
     gpu_mem_ = mem;
     profile_ = {};
     uint64_t before = ticks();
+    if (threaded) {
+        // The emulation runs on while the worker draws: it reads this copy.
+        std::memcpy(tile_snap_.data(), tile_ram_, tile_snap_.size());
+        tile_src_ = tile_snap_.data();
+    } else {
+        tile_src_ = tile_ram_;
+        pen_tab_ = pens_;
+    }
     // Retain the reference's sticky palette-dirty behavior. palette_w marks
     // cached composition dirty only if the resulting RGB value really changed.
     if (palette_dirty_) {
@@ -451,6 +535,61 @@ void Video::screen_update(const std::vector<GeoPoly> &polys, int windows, const 
         rendered_now_ = false;
         return;
     }
+    Job job;
+    job.polys = &polys;
+    job.windows = windows;
+    job.mem = mem;
+#ifdef M2_VITA_RENDER_OPT
+    job.background_dirty = background_dirty_;
+    job.foreground_dirty = foreground_dirty_;
+    background_dirty_ = foreground_dirty_ = false;
+#endif
+    if (!threaded) {
+        compose(job, profile_);
+        return;
+    }
+    job.threaded = true;
+    job.crtc_x = crtc_x_;
+    job.crtc_y = crtc_y_;
+    job.render_x = render_x_;
+    job.render_y = render_y_;
+    std::copy_n(pens_, 8192, pens_snap_.data());
+    pen_tab_ = pens_snap_.data();
+    job.draw_3d = !render_done_ && !polys.empty();
+    if (job.draw_3d) {
+        render_done_ = true;
+        polys_snap_.assign(polys.begin(), polys.end());
+        job.polys = &polys_snap_;
+        std::memcpy(palram_snap_.data(), mem.palram, palram_snap_.size());
+        std::memcpy(xlat_snap_.data(), mem.colorxlat, xlat_snap_.size());
+        std::memcpy(luma_snap_.data(), mem.lumaram, luma_snap_.size());
+        job.mem.palram = palram_snap_.data();
+        job.mem.colorxlat = xlat_snap_.data();
+        job.mem.lumaram = luma_snap_.data();
+    }
+    job.have_3d = render_done_;
+    // Report this update's decode with the previous update's drawing.
+    profile_.tile_draw = drawn.tile_draw;
+    profile_.raster = drawn.raster;
+    profile_.composite = drawn.composite;
+    profile_.layers_rebuilt = drawn.layers_rebuilt;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        job_ = job;
+        job_profile_ = {};
+        job_pending_ = true;
+    }
+    cv_.notify_all();
+}
+
+// The drawing half of screen_update: 2D back layers, the 3D layer, 2D front
+// layers into screen_. Threaded, it runs on the worker and reads only the
+// job and the snapshots.
+void Video::compose(const Job &job, VideoProfile &profile) {
+    const std::vector<GeoPoly> &polys = *job.polys;
+    const int windows = job.windows;
+    const VideoMem &mem = job.mem;
+    uint64_t before = 0;
     // Non-zero pixels of a `width`-wide source onto the screen at column `at`.
     const size_t out_w = size_t(width());
     auto copy_trans = [&](const uint32_t *source, size_t stride, int width = W, int at = 0) {
@@ -461,38 +600,36 @@ void Video::screen_update(const std::vector<GeoPoly> &polys, int windows, const 
     };
 #ifdef M2_VITA_RENDER_OPT
     before = ticks();
-    if (background_dirty_) {
+    if (job.background_dirty) {
         // All tile writes are replacements, not blends. Drawing the back
         // layers over pen 0 is identical to zero + transparent copy over pen 0.
-        std::fill(background_.begin(), background_.end(), pens_[0]);
+        std::fill(background_.begin(), background_.end(), pen_tab_[0]);
         for (int layer = 3; layer >= 2; --layer) draw(background_, layer << 1, DRAW_OPAQUE);
         for (int layer = 1; layer >= 0; --layer) draw(background_, layer << 1, 0);
-        background_dirty_ = false;
         ++background_generation_;
-        profile_.layers_rebuilt = true;
+        profile.layers_rebuilt = true;
     }
-    if (foreground_dirty_) {
+    if (job.foreground_dirty) {
         std::fill(sys24_.begin(), sys24_.end(), 0u);
         for (int layer = 3; layer >= 0; --layer) draw(sys24_, (layer << 1) | 1, 0);
-        foreground_dirty_ = false;
         ++foreground_generation_;
-        profile_.layers_rebuilt = true;
+        profile.layers_rebuilt = true;
     }
-    profile_.tile_draw = ticks() - before;
+    profile.tile_draw = ticks() - before;
     before = ticks();
     std::copy_n(background_.data(), screen_.size(), screen_.data());
-    profile_.composite += ticks() - before;
+    profile.composite += ticks() - before;
 #else
     before = ticks();
-    std::fill(screen_.begin(), screen_.end(), pens_[0]);
+    std::fill(screen_.begin(), screen_.end(), pen_tab_[0]);
     std::fill(sys24_.begin(), sys24_.end(), 0u);
     for (int layer = 3; layer >= 2; --layer) draw(sys24_, layer << 1, DRAW_OPAQUE);
     for (int layer = 1; layer >= 0; --layer) draw(sys24_, layer << 1, 0);
-    profile_.tile_draw += ticks() - before;
-    profile_.layers_rebuilt = true;
+    profile.tile_draw += ticks() - before;
+    profile.layers_rebuilt = true;
     before = ticks();
     copy_trans(sys24_.data(), W, W, margin_);
-    profile_.composite += ticks() - before;
+    profile.composite += ticks() - before;
 #endif
     rendered_now_ = false;
     if (external_3d_) {
@@ -505,7 +642,7 @@ void Video::screen_update(const std::vector<GeoPoly> &polys, int windows, const 
         before = ticks();
         std::fill(sys24_.begin(), sys24_.end(), 0u);
         for (int layer = 3; layer >= 0; --layer) draw(sys24_, (layer << 1) | 1, 0);
-        profile_.tile_draw += ticks() - before;
+        profile.tile_draw += ticks() - before;
 #endif
         std::fill(foreground_gpu_.begin(), foreground_gpu_.end(), 0u);
         std::copy_n(sys24_.data(), std::min(sys24_.size(), foreground_gpu_.size()), foreground_gpu_.data());
@@ -518,16 +655,35 @@ void Video::screen_update(const std::vector<GeoPoly> &polys, int windows, const 
         before = ticks();
         std::fill(sys24_.begin(), sys24_.end(), 0u);
         for (int layer = 3; layer >= 0; --layer) draw(sys24_, (layer << 1) | 1, 0);
-        profile_.tile_draw += ticks() - before;
+        profile.tile_draw += ticks() - before;
         // Only while the race HUD is on screen (its condition panel's box).
         const bool race_hud = raster_.find_race_hud(polys, crtc_x_ + margin_, crtc_y_);
         if (race_hud != hud_on_) { hud_on_ = race_hud; set_raster_hud_moves(); render_done_ = false; }
+    }
+    if (job.threaded) {
+        if (job.draw_3d) {
+            before = ticks();
+            raster_.render(polys, windows, mem, job.crtc_x, job.crtc_y, job.render_x, job.render_y, 0, W - 1, 0, H - 1);
+            profile.raster = ticks() - before;
+            rendered_now_ = true;
+        }
+#ifndef M2_VITA_RENDER_OPT
+        before = ticks();
+        std::fill(sys24_.begin(), sys24_.end(), 0u);
+        for (int layer = 3; layer >= 0; --layer) draw(sys24_, (layer << 1) | 1, 0);
+        profile.tile_draw += ticks() - before;
+#endif
+        before = ticks();
+        if (job.have_3d) copy_trans(raster_.pixels(), size_t(raster_.stride()), W);
+        copy_trans(sys24_.data(), W, W, 0);
+        profile.composite += ticks() - before;
+        return;
     }
     if (!render_done_ && !polys.empty()) {
         before = ticks();
         raster_.render(polys, windows, mem, crtc_x_ + margin_, crtc_y_, render_x_ + margin_, render_y_, 0,
                        width() - 1, 0, H - 1);
-        profile_.raster = ticks() - before;
+        profile.raster = ticks() - before;
         if (margin_) { // widescreen: how much of the original screen the 3D layer covers
             size_t covered = 0;
             for (int y = 0; y < H; ++y) {
@@ -545,13 +701,13 @@ void Video::screen_update(const std::vector<GeoPoly> &polys, int windows, const 
         fill_margins();
     }
     if (render_done_) copy_trans(raster_.pixels(), size_t(raster_.stride()), width());
-    profile_.composite += ticks() - before;
+    profile.composite += ticks() - before;
 #ifndef M2_VITA_RENDER_OPT
     if (!hud_edges) {
         before = ticks();
         std::fill(sys24_.begin(), sys24_.end(), 0u);
         for (int layer = 3; layer >= 0; --layer) draw(sys24_, (layer << 1) | 1, 0);
-        profile_.tile_draw += ticks() - before;
+        profile.tile_draw += ticks() - before;
     }
 #endif
     before = ticks();
@@ -560,7 +716,7 @@ void Video::screen_update(const std::vector<GeoPoly> &polys, int windows, const 
     } else {
         copy_trans(sys24_.data(), W, W, margin_);
     }
-    profile_.composite += ticks() - before;
+    profile.composite += ticks() - before;
 }
 
 // Widescreen, HUD at the edges: the race HUD's side groups (lap and lap
@@ -679,8 +835,8 @@ void Video::fill_margins() {
     for (int y = 0; y < H; ++y) {
         uint32_t *row = &screen_[size_t(y) * size_t(out)];
         const uint32_t left = scene ? sky : row[margin_], right = scene ? sky : row[margin_ + W - 1];
-        std::fill(row, row + margin_, left ? left : pens_[0]);
-        std::fill(row + margin_ + W, row + out, right ? right : pens_[0]);
+        std::fill(row, row + margin_, left ? left : pen_tab_[0]);
+        std::fill(row + margin_ + W, row + out, right ? right : pen_tab_[0]);
     }
 }
 
@@ -700,7 +856,7 @@ void Video::set_wide_margin(int margin) {
 
 uint64_t Video::screen_hash() const {
     uint64_t h = 0xcbf29ce484222325ULL;
-    for (uint32_t px : screen_)
+    for (uint32_t px : screen())
         for (int b = 0; b < 4; b++) {
             h ^= (px >> (8 * b)) & 0xff;
             h *= 0x100000001b3ULL;

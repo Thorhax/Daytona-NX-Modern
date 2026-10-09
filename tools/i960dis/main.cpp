@@ -44,12 +44,16 @@
 namespace {
 
 std::vector<uint8_t> read_file(const char *path) {
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f) {
         std::fprintf(stderr, "i960dis: cannot open %s\n", path);
         std::exit(2);
     }
-    return {std::istreambuf_iterator<char>(f), {}};
+    const size_t sz = size_t(f.tellg());
+    f.seekg(0, std::ios::beg);
+    std::vector<uint8_t> buf(sz);
+    f.read(reinterpret_cast<char *>(buf.data()), std::streamsize(sz));
+    return buf;
 }
 
 uint32_t parse_num(const char *s) { return uint32_t(std::strtoul(s, nullptr, 0)); }

@@ -42,6 +42,61 @@ inline bool menu_chord(uint32_t buttons) {
 
 class Controls {
 public:
+#if defined(M2_ROMSET_VF2)
+    // B: punch, A: kick, Y: guard, X: guard + kick; ZL/ZR/L/R: guard.
+    // Returns the active-low mask to AND in (0x01 punch, 0x02 kick, 0x04 guard).
+    static uint8_t action_bits(uint32_t buttons) {
+        uint8_t bits = 0;
+        if (buttons & B) bits |= 0x01;
+        if (buttons & (A | X)) bits |= 0x02;
+        if (buttons & (Y | X | ZL | ZR | L | R)) bits |= 0x04;
+        return uint8_t(~bits);
+    }
+
+    Input sample(Pad pad1, Pad pad2 = {}) {
+        Input in;
+        in.in0 = 0xff;
+        in.in1 = 0xff;
+        in.in2 = 0xff;
+        held_ = pad1.buttons;
+
+        if (menu_chord(pad1.buttons) || menu_chord(pad2.buttons)) {
+            return in;
+        }
+
+        // --- Player 1 ---
+        // Arcade system buttons (in0 is active low)
+        if (pad1.buttons & Minus) in.in0 &= uint8_t(~0x01); // Coin 1
+        if (pad1.buttons & Plus)  in.in0 &= uint8_t(~0x10); // Start 1
+        if (pad1.buttons & StickL) in.in0 &= uint8_t(~0x04); // Test Switch
+        if (pad1.buttons & StickR) in.in0 &= uint8_t(~0x08); // Service Switch
+
+        // Player 1 Action Buttons (in1 is active low): punch, kick, guard
+        in.in1 &= action_bits(pad1.buttons);
+
+        // Player 1 Movement: D-Pad and Left Analog Stick. With ZL+ZR held
+        // the D-pad's Up belongs to the cheat chord (ZL+ZR+Up), not the game.
+        constexpr float kDeadzone = 0.35f;
+        const bool cheat_modifier = (pad1.buttons & (ZL | ZR)) == (ZL | ZR);
+        if ((pad1.buttons & Down)  || pad1.ly < -kDeadzone) in.in1 &= uint8_t(~0x10);
+        if (((pad1.buttons & Up) && !cheat_modifier) || pad1.ly > kDeadzone) in.in1 &= uint8_t(~0x20);
+        if ((pad1.buttons & Right) || pad1.lx > kDeadzone)  in.in1 &= uint8_t(~0x40);
+        if ((pad1.buttons & Left)  || pad1.lx < -kDeadzone) in.in1 &= uint8_t(~0x80);
+
+        // --- Player 2 ---
+        if (pad2.buttons & Minus) in.in0 &= uint8_t(~0x02); // Coin 2
+        if (pad2.buttons & Plus)  in.in0 &= uint8_t(~0x20); // Start 2
+
+        in.in2 &= action_bits(pad2.buttons);
+
+        if ((pad2.buttons & Down)  || pad2.ly < -kDeadzone) in.in2 &= uint8_t(~0x10);
+        if ((pad2.buttons & Up)    || pad2.ly > kDeadzone)  in.in2 &= uint8_t(~0x20);
+        if ((pad2.buttons & Right) || pad2.lx > kDeadzone)  in.in2 &= uint8_t(~0x40);
+        if ((pad2.buttons & Left)  || pad2.lx < -kDeadzone) in.in2 &= uint8_t(~0x80);
+
+        return in;
+    }
+#else
     Input sample(Pad pad) {
         Input in;
         const uint32_t pressed = pad.buttons & ~held_;
@@ -107,6 +162,7 @@ public:
 
         return in;
     }
+#endif
 
     void latch(uint32_t buttons) { held_ = buttons; }
     int gear() const { return gear_; }

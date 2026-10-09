@@ -121,6 +121,24 @@ struct Emitter {
         auto two = [&](const std::string &v) { // read both sources first, as MAME does
             body += "{ const uint32_t t1 = " + s1(in) + ", t2 = " + s2(in) + "; " + d + " = " + v + "; }";
         };
+        auto fsrc = [&](unsigned src, bool m) -> std::string {
+            if (m) {
+                if (src < 4) return "c.m_fp[" + std::to_string(src) + "]";
+                if (src == 0x16) return "1.0";
+                return "0.0";
+            }
+            return "double(gen::u2f(" + R(src) + "))";
+        };
+        auto fset = [&](unsigned dst, bool m, const std::string &expr) -> bool {
+            if (!m) {
+                set("gen::f2u(float(" + expr + "))");
+            } else if (dst < 4) {
+                body += "c.m_fp[" + std::to_string(dst) + "] = double(float(" + expr + "));";
+            } else {
+                return false;
+            }
+            return true;
+        };
         const uint32_t tgt = in.target, tgt_masked = in.target & ~3u; // bxx/bxx_s mask the target, b/bal/call/bbc/bbs do not
 
         switch (in.fmt) {
@@ -237,6 +255,22 @@ struct Emitter {
                                "if ((t1 & 0xff000000) == (t2 & 0xff000000) || (t1 & 0x00ff0000) == (t2 & 0x00ff0000) || "
                                "(t1 & 0x0000ff00) == (t2 & 0x0000ff00) || (t1 & 0x000000ff) == (t2 & 0x000000ff)) AC |= 2; }"; break; // scanbyte
             case 0x5ae: body = "{ const uint32_t t1 = " + s1(in) + " & 0x1f, t2 = " + s2(in) + "; AC = (t2 & (1u << t1)) ? ((AC & ~7u) | 2u) : (AC & ~7u); }"; break; // chkbit
+            case 0x5b0: { // addc
+                body = "{ const uint64_t t1 = " + s1(in) + ", t2 = " + s2(in) + "; "
+                       "const uint64_t res = t2 + t1 + ((AC >> 1) & 1u); " +
+                       d + " = uint32_t(res); "
+                       "AC = (AC & ~3u) | (uint32_t((res >> 32) & 1u) << 1) | "
+                       "(uint32_t(((res ^ t1) & (res ^ t2) & 0x80000000u) != 0)); }";
+                break;
+            }
+            case 0x5b2: { // subc
+                body = "{ const uint64_t t1 = " + s1(in) + ", t2 = " + s2(in) + "; "
+                       "const uint64_t res = t2 + uint64_t(uint32_t(~t1)) + ((AC >> 1) & 1u); " +
+                       d + " = uint32_t(res); "
+                       "AC = (AC & ~7u) | (uint32_t((res >> 32) & 1u) << 1) | "
+                       "(uint32_t(((t2 ^ t1) & (t2 ^ res) & 0x80000000u) != 0)); }";
+                break;
+            }
             case 0x5cc: set(s1(in)); break;                                // mov
             case 0x5dc: case 0x5ec: case 0x5fc: {                          // movl/movt/movq
                 const int n = code == 0x5dc ? 2 : code == 0x5ec ? 3 : 4;
@@ -257,6 +291,17 @@ struct Emitter {
                                "; c.send_iac(t2); } else { for (uint32_t k = 0; k < 16; k += 4) c.bus->write_dword(t1 + k, c.bus->read_dword(t2 + k)); } "
                                "AC = (AC & ~7u) | 2u; }";
                         exit = "if (c.m_IP != " + hex(next) + " && c.m_IP != " + hex(pc) + ") goto dispatch;"; break; // synmovq (an IAC can reinit)
+            case 0x640: // spanbit
+                body = "{ AC &= ~7u; uint32_t res = 0xffffffffu; const uint32_t v = " + s1(in) + "; "
+                       "for (int i = 31; i >= 0; --i) { if (!(v & (1u << i))) { AC |= 2u; res = uint32_t(i); break; } } " +
+                       d + " = res; }"; break;
+            case 0x641: // scanbit
+                body = "{ AC &= ~7u; uint32_t res = 0xffffffffu; const uint32_t v = " + s1(in) + "; "
+                       "for (int i = 31; i >= 0; --i) { if (v & (1u << i)) { AC |= 2u; res = uint32_t(i); break; } } " +
+                       d + " = res; }"; break;
+            case 0x644: // dmovt
+                body = "{ const uint32_t t1 = " + s1(in) + "; " + d + " = t1; "
+                       "AC &= ~7u; if ((t1 & 0xffu) < 0x30u || (t1 & 0xffu) > 0x39u) AC |= 2u; }"; break;
             case 0x645: body = "{ const uint32_t t1 = " + s1(in) + ", t2 = " + s2(in) + "; " + d + " = AC; AC = (AC & ~t1) | (t2 & t1); }"; break; // modac
             case 0x655: body = "{ const uint32_t t1 = c.m_PC, t2 = " + s2(in) + "; c.m_PC = (c.m_PC & ~t2) | (" + d + " & t2); " + d +
                                " = t1; c.m_IP = " + hex(next) + "; if ((t1 >> 16 & 0x1f) > (c.m_PC >> 16 & 0x1f)) c.check_pending_irqs(); }";
@@ -270,16 +315,23 @@ struct Emitter {
                        d + " = rem; " + R(in.dst + 1) + " = quo; }";
                 break;
             }
-            case 0x674: if (in.m3) return unsupported(in);                  // cvtir: integer src1, real dst
-                        set("gen::f2u(float(double(int32_t(" + s1(in) + "))))"); break;
-            case 0x677: if (in.m2 || in.m3) return unsupported(in);         // scaler: integer src1, real src2/dst
-                        set("gen::f2u(float(double(gen::u2f(" + R(in.src2) + ")) * std::pow(2.0, double(int32_t(" + s1(in) + ")))))"); break;
-            case 0x685: if (in.m1 || in.m2) return unsupported(in);         // cmpr
-                        body = "AC = (AC & ~7u) | gen::cc_d(double(gen::u2f(" + R(in.src1) + ")), double(gen::u2f(" + R(in.src2) + ")));"; break; // cmpr
-            case 0x6c0: if (in.m1) return unsupported(in);                  // cvtri: real src1, integer dst
-                        set("uint32_t(int32_t(gen::round_to_int(double(gen::u2f(" + R(in.src1) + ")), AC)))"); break; // cvtri
-            case 0x6c2: if (in.m1) return unsupported(in);                  // cvtzri
-                        set("uint32_t(int32_t(double(gen::u2f(" + R(in.src1) + "))))"); break; // cvtzri
+            case 0x674: if (!fset(in.dst, in.m3, "double(int32_t(" + s1(in) + "))")) return unsupported(in); break; // cvtir
+            case 0x675: { // cvtilr
+                if (in.m3) {
+                    if (in.dst >= 4) return unsupported(in);
+                    body = "c.m_fp[" + std::to_string(in.dst & 3u) + "] = double(int32_t(" + s1(in) + "));";
+                } else {
+                    const unsigned dst = in.dst & 0x1eu;
+                    body = "{ const uint64_t v = gen::d2u(double(int32_t(" + s1(in) + "))); " +
+                           R(dst) + " = uint32_t(v); " + R(dst + 1) + " = uint32_t(v >> 32); }";
+                }
+                break;
+            }
+            case 0x677: if (!fset(in.dst, in.m3, fsrc(in.src2, in.m2) + " * std::pow(2.0, double(int32_t(" + s1(in) + ")))")) return unsupported(in); break; // scaler
+            case 0x685: body = "AC = (AC & ~7u) | gen::cc_d(" + fsrc(in.src1, in.m1) + ", " + fsrc(in.src2, in.m2) + ");"; break; // cmpr
+            case 0x6c0: set("gen::d2i(gen::round_to_int(" + fsrc(in.src1, in.m1) + ", AC))"); break; // cvtri
+            case 0x6c2: set("gen::d2i(" + fsrc(in.src1, in.m1) + ")"); break; // cvtzri
+            case 0x6c9: if (!fset(in.dst, in.m3, fsrc(in.src1, in.m1))) return unsupported(in); break; // movr
             case 0x701: two("t2 * t1"); break;                             // mulo
             case 0x708: two("t2 % t1"); break;                             // remo (MAME: undefined on 0)
             case 0x70b: two("t1 == 0 ? 0u : t2 / t1"); break;              // divo (MAME: 0 on divide by zero)
@@ -288,10 +340,10 @@ struct Emitter {
             case 0x749: two("uint32_t([](int32_t a, int32_t b) { int32_t r = a - (a / b) * b; "
                             "if ((b ^ a) < 0 && r != 0) r += b; return r; }(int32_t(t2), int32_t(t1)))"); break; // modi (sign of src1)
             case 0x74b: two("uint32_t(int32_t(t2) / int32_t(t1))"); break; // divi
-            case 0x78d: if (in.m1 || in.m2 || in.m3) return unsupported(in); // subr: reals in registers (MAME: double, then float)
-                        set("gen::f2u(float(double(gen::u2f(" + R(in.src2) + ")) - double(gen::u2f(" + R(in.src1) + "))))"); break;
-            case 0x78f: if (in.m1 || in.m2 || in.m3) return unsupported(in); // addr
-                        set("gen::f2u(float(double(gen::u2f(" + R(in.src2) + ")) + double(gen::u2f(" + R(in.src1) + "))))"); break;
+            case 0x78b: if (!fset(in.dst, in.m3, fsrc(in.src2, in.m2) + " / " + fsrc(in.src1, in.m1))) return unsupported(in); break; // divr
+            case 0x78c: if (!fset(in.dst, in.m3, fsrc(in.src2, in.m2) + " * " + fsrc(in.src1, in.m1))) return unsupported(in); break; // mulr
+            case 0x78d: if (!fset(in.dst, in.m3, fsrc(in.src2, in.m2) + " - " + fsrc(in.src1, in.m1))) return unsupported(in); break; // subr
+            case 0x78f: if (!fset(in.dst, in.m3, fsrc(in.src2, in.m2) + " + " + fsrc(in.src1, in.m1))) return unsupported(in); break; // addr
             default: return unsupported(in);
             }
             break;
@@ -386,7 +438,7 @@ int main(int argc, char **argv) {
     auto read = [&](uint32_t a) -> std::optional<uint32_t> {
         uint64_t off;
         if (a < img.size()) off = a;
-        else if (a >= 0x220000 && a < 0x240000) off = a - 0x200000;
+        else if (img.size() <= 0x100000 && a >= 0x220000 && a < 0x240000) off = a - 0x200000;
         else return std::nullopt;
         if (off + 4 > img.size()) return std::nullopt;
         uint32_t v;

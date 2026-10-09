@@ -1,3 +1,25 @@
+# Virtua Fighter 2 for Nintendo Switch (Sega Model 2A static recompilation)
+
+This repository is the Daytona USA static recompilation extended to Virtua
+Fighter 2 (Model 2A, MAME set `vf2`), with a native Nintendo Switch port.
+The i960 game program, the TGP program and the sound 68000 program are
+statically recompiled to C++. The Model 2A board, the SCSP sound chip, the
+geometrizer, the rasterizer and the tilemaps are native C++.
+
+No game data is in this repository or in the release: supply your own MAME
+`vf2.zip` and place it at `sdmc:/switch/vf2/vf2.zip` next to `vf2.nro`.
+
+Switch build (devkitPro, or Docker with `devkitpro-mesa-rust:latest`):
+
+    python3 scripts/recompile.py --set vf2 --build-dir build-vf2   # needs roms/vf2.zip
+    bash scripts/build_switch_vf2.sh
+
+Controls: B punch, A kick, Y guard, X guard+kick (ZL/ZR/L/R also guard),
+Plus start, Minus coin, Plus+Minus menu. ZL+ZR+D-pad Up toggles player 1
+infinite health. Notes on the port: `PROJECT_STATUS.md`.
+
+The Daytona USA documentation follows.
+
 # Daytona USA static recompilation
 
 Daytona USA (Sega Model 2) rebuilt as native code: the game's i960 program

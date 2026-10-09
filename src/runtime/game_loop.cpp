@@ -14,7 +14,7 @@ std::vector<uint8_t> load(const std::string &path) {
 }
 
 constexpr uint64_t kProbe = 1024;       // instructions between wait-loop checks
-constexpr uint64_t kFrameCap = 110000;  // a CPU-bound frame: 25 MHz / 57.52 Hz of i960 work, as MAME measures
+constexpr uint64_t kFrameCap = M2Board::kFrameInstructions; // a CPU-bound frame: 25 MHz / 57.52 Hz of i960 work, as MAME measures
 constexpr uint64_t kVblankCap = 40000;  // a vblank handler that never returns to the wait loop
 constexpr uint64_t kMinFrame = kProbe * 2;
 } // namespace
@@ -60,7 +60,21 @@ void GameLoop::probe() {
         }
     } else {
         const uint64_t since = ls_->count - frame_start_;
-        if ((idle && since >= kMinFrame) || since >= kFrameCap) {
+        bool end = since >= kFrameCap;
+        if (idle && since >= kMinFrame && !end) {
+            // Waiting for vblank: the rest of the frame passes at once, but
+            // a board timer due before then interrupts the wait on time
+            // (VF2's 250 Hz timer 3 paces its title and stage loading).
+            const uint64_t now = board_->vtime(), frame_end = vblank_time_ + kFrameCap;
+            const uint64_t due = board_->next_timer_due();
+            if (due < frame_end) {
+                if (due > now) board_->skip_time(due - now);
+            } else {
+                if (frame_end > now) board_->skip_time(frame_end - now);
+                end = true;
+            }
+        }
+        if (end) {
             board_->io().inputs = inputs_;
             {
                 auto sample = profiler_.measure(profiler_.frame.geometry);
@@ -68,10 +82,27 @@ void GameLoop::probe() {
             }
             in_vblank_ = true;
             vblank_start_ = ls_->count;
+            vblank_time_ = board_->vtime();
         }
     }
     ls_->add_callback(ls_->count + kProbe, [this] { probe(); });
 }
+
+void GameLoop::apply_cheats() {
+#if defined(M2_ROMSET_VF2)
+    if (!p1_inf_hp_) return;
+    constexpr uint32_t kP1Health = 0x00510b2c - 0x00500000; // in work RAM
+    uint8_t *hp = board_->work_ram().data() + kP1Health;
+    const uint16_t now = uint16_t(hp[0] | hp[1] << 8);
+    if (now > p1_hp_hold_ && now <= 0x400) p1_hp_hold_ = now;
+    if (p1_hp_hold_ && now != p1_hp_hold_) {
+        hp[0] = uint8_t(p1_hp_hold_);
+        hp[1] = uint8_t(p1_hp_hold_ >> 8);
+    }
+#endif
+}
+
+size_t GameLoop::pending_events() const { return ls_->pending_events(); }
 
 void GameLoop::run_frame(const Inputs &inputs) {
     run_frame_deferred_sound(inputs);
@@ -111,6 +142,7 @@ void GameLoop::run_frame_deferred_sound(const Inputs &inputs) {
         }
         gen::run(*env_);
     }
+    apply_cheats();
     // Transfer the UART bytes on the owning thread. The sound worker never
     // touches M2Board, video, i960/TGP state, or the frame profiler.
     if (sound_) {

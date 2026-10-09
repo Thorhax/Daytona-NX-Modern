@@ -419,9 +419,22 @@ int main(int argc, char **argv) {
                 if (!l.empty() && l[0] != '#') seeds.push_back(uint32_t(std::strtoul(l.c_str(), nullptr, 16)));
         }
 
-    // Sound board map: ROM at 0, its upper 128 KiB mirrored at 0x080000.
+    // Sound board map: Model 1 ROM at 0 (upper 128 KiB mirrored at 0x080000);
+    // Model 2 SCSP ROM at 0x600000 (vector table at 0).
+    const uint32_t init_pc = (img.size() >= 8) ? (uint32_t(img[4]) << 24 | uint32_t(img[5]) << 16 | uint32_t(img[6]) << 8 | uint32_t(img[7])) : 0;
+    const bool is_scsp = (init_pc & 0xff0000) == 0x600000;
     auto read = [&](uint32_t a) -> std::optional<uint16_t> {
         a &= 0xffffff;
+        if (is_scsp) {
+            if (a < 0x100) { // vector table
+                if (a + 1 >= img.size()) return std::nullopt;
+                return uint16_t(img[a] << 8 | img[a + 1]);
+            }
+            if (a >= 0x600000 && a < 0x680000) a -= 0x600000;
+            else return std::nullopt;
+            if (a + 1 >= img.size()) return std::nullopt;
+            return uint16_t(img[a] << 8 | img[a + 1]);
+        }
         if (a >= 0x80000 && a < 0xa0000) a -= 0x60000;
         if (a + 1 >= img.size() || a >= 0x40000) return std::nullopt;
         return uint16_t(img[a] << 8 | img[a + 1]);

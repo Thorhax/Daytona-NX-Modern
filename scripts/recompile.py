@@ -42,7 +42,7 @@ def tool(build, config, name):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--set", default="daytona93", choices=["daytona93", "daytona"])
+    ap.add_argument("--set", default="daytona93", choices=["daytona93", "daytona", "vf2"])
     ap.add_argument("--build-dir", default="build")
     ap.add_argument("--config", default="Release")
     args = ap.parse_args()
@@ -80,8 +80,12 @@ def main():
 
     snd = os.path.join(build, "gen", args.set + "_snd")
     os.makedirs(snd, exist_ok=True)
-    run([tool(build, args.config, "m2sndrecomp"), os.path.join(cache, "sound_program.bin"),
-         os.path.join(snd, "snd_gen.cpp")])
+    snd_cmd = [tool(build, args.config, "m2sndrecomp"), os.path.join(cache, "sound_program.bin"),
+               os.path.join(snd, "snd_gen.cpp")]
+    snd_seeds = os.path.join("seeds", args.set + "_snd.txt")
+    if os.path.exists(os.path.join(ROOT, snd_seeds)):
+        snd_cmd += ["--seeds", snd_seeds]
+    run(snd_cmd)
 
     run(["cmake", "-S", ".", "-B", build])  # picks up the generated sources
     run(build_cmd + ["--parallel"])  # the game (daytona, m2run) and the check tools

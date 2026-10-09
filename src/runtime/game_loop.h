@@ -85,6 +85,13 @@ public:
     // Opt-in profiling in caller-defined host ticks; no SDL dependency here.
     void set_profile_clock(FrameProfiler::Clock clock) { profiler_.set_clock(clock); sound_profile_clock_ = clock; }
     const FrameProfile &last_profile() const { return profiler_.frame; }
+    // VF2 cheat: player 1's health held at full, applied at each frame end.
+    // Health is a 16-bit value at 0x00510b2c (176 when full by default). Held
+    // at the most it has been since enabled, so a round start (back to full)
+    // also sets the level.
+    void set_p1_infinite_health(bool on) { p1_inf_hp_ = on; p1_hp_hold_ = 0; }
+    bool p1_infinite_health() const { return p1_inf_hp_; }
+    size_t pending_events() const; // scheduled board events not yet due (diagnostics)
 
     const std::vector<uint32_t> &screen() const { return board_->video().screen(); } // screen_width() x 384, 0xAARRGGBB
     static constexpr int kWidth = Video::W, kHeight = Video::H; // the original screen
@@ -108,6 +115,7 @@ public:
         return width > kWidth ? (width - kWidth) / 2 : 0;
     }
     M2Board &board() { return *board_; }
+    Cpu &cpu() { return *cpu_; }
     snd::SoundBoard *sound() { return sound_.get(); } // null without the sound ROMs
     static constexpr double kFrameHz = 16000000.0 / (656.0 * 424.0); // the board's video timing
     uint64_t frames() const { return frames_; }
@@ -118,6 +126,9 @@ private:
     void probe();
     FrameProfiler profiler_;
     std::unique_ptr<M2Board> board_;
+    bool p1_inf_hp_ = false;
+    uint16_t p1_hp_hold_ = 0;
+    void apply_cheats();
     std::unique_ptr<Cpu> cpu_;
     std::unique_ptr<Lockstep> ls_;
     std::unique_ptr<gen::Env> env_;
@@ -128,6 +139,7 @@ private:
     Inputs inputs_;
     bool in_vblank_ = false, frame_done_ = false;
     uint64_t frame_start_ = 0, vblank_start_ = 0, frames_ = 0;
+    uint64_t vblank_time_ = 0; // board vtime() at the last vblank: a frame is kFrameCap of it
 };
 
 } // namespace rt

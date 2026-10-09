@@ -34,8 +34,17 @@ inline double round_to_int(double v, uint32_t ac) {
     default: return std::trunc(v);
     }
 }
+// MAME's s32(double) on its x86-64 build (cvttsd2si): NaN and out-of-range
+// give 0x80000000. A plain cast is undefined there and ARM64 saturates (NaN
+// to 0).
+inline uint32_t d2i(double v) {
+    if (!(v >= -2147483648.0 && v < 2147483648.0)) return 0x80000000u;
+    return uint32_t(int32_t(v));
+}
 inline uint32_t f2u(float f) { return std::bit_cast<uint32_t>(f); }
 inline float u2f(uint32_t u) { return std::bit_cast<float>(u); }
+inline uint64_t d2u(double d) { return std::bit_cast<uint64_t>(d); }
+inline double u2d(uint64_t u) { return std::bit_cast<double>(u); }
 
 // Recompiled code entry points (generated): run from c.m_IP until it leaves
 // recompiled code or the lockstep run ends.

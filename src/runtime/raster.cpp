@@ -124,7 +124,7 @@ struct Raster::Extra {
 #if defined(__SWITCH__)
 class Raster::RasterWorker {
 public:
-    RasterWorker() {
+    RasterWorker(int core_id) : core_id_(core_id) {
         running_ = true;
         thread_ = std::thread(&RasterWorker::loop, this);
     }
@@ -155,8 +155,8 @@ public:
 
 private:
     void loop() {
-        // Pin worker thread to Core 2 (dedicated user core)
-        svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, 0b0111);
+        // Pin worker thread to the assigned core
+        svcSetThreadCoreMask(CUR_THREAD_HANDLE, core_id_, 0b0111);
         svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2C);
 
         std::unique_lock<std::mutex> lock(mutex_);
@@ -175,6 +175,7 @@ private:
         }
     }
 
+    int core_id_ = 2;
     std::thread thread_;
     std::mutex mutex_;
     std::condition_variable cv_work_;
@@ -188,7 +189,8 @@ private:
 
 Raster::Raster() : dest_(512 * 512), fill_(512 * 512) {
 #if defined(__SWITCH__)
-    worker_ = std::make_unique<RasterWorker>();
+    workers_[0] = std::make_unique<RasterWorker>(1); // Core 1
+    workers_[1] = std::make_unique<RasterWorker>(2); // Core 2
 #endif
     // MAME video_start
     for (int i = 0; i < 256; i++) {
@@ -245,9 +247,9 @@ void Raster::render(const std::vector<GeoPoly> &polys, int windows, const VideoM
         return a > b;
     });
 #if defined(__SWITCH__)
-    if (worker_) {
-        constexpr int kSlices = 8;
-        constexpr int kSliceHeight = 48;
+    if (workers_[0] && workers_[1]) {
+        constexpr int kSlices = 12;
+        constexpr int kSliceHeight = 32;
         std::atomic<int> next_slice{0};
 
         auto do_slices = [&](ShadeEntry *thread_shades) {
@@ -266,15 +268,20 @@ void Raster::render(const std::vector<GeoPoly> &polys, int windows, const VideoM
             }
         };
 
-        for (auto &entry : worker_shades_) entry.key = 0xffffffffu;
+        for (auto &entry : worker_shades_[0]) entry.key = 0xffffffffu;
+        for (auto &entry : worker_shades_[1]) entry.key = 0xffffffffu;
 
-        worker_->start([&]() {
-            do_slices(worker_shades_.data());
+        workers_[0]->start([&]() {
+            do_slices(worker_shades_[0].data());
+        });
+        workers_[1]->start([&]() {
+            do_slices(worker_shades_[1].data());
         });
 
         do_slices(shades_.data());
 
-        worker_->wait();
+        workers_[0]->wait();
+        workers_[1]->wait();
     } else {
         for (size_t i : order)
             if (polys[i].window <= windows) render_one(polys[i], crtc_x, crtc_y, render_x, render_y, clip_minx, clip_maxx, clip_miny, clip_maxy);
@@ -356,6 +363,16 @@ void Raster::render_one(GeoPoly poly, int crtc_x, int crtc_y, int render_x, int 
         v.y = float((384 - poly.center[1]) + crtc_y) - (v.y / (v.p[0] + std::numeric_limits<float>::min()));
     }
 
+    // Early bounding-box culling against slice bounds
+    if (poly.num_vertices > 0) {
+        float min_py = poly.v[0].y, max_py = poly.v[0].y;
+        for (int i = 1; i < poly.num_vertices; i++) {
+            min_py = std::min(min_py, poly.v[i].y);
+            max_py = std::max(max_py, poly.v[i].y);
+        }
+        if (round_coordinate(max_py) < clip_miny || round_coordinate(min_py) > clip_maxy) return;
+    }
+
     // Widescreen, HUD at the edges: the condition panel's own overlay quads
     // (its z, inside its box) move with the HUD; nothing else does.
     if (hud_dx_ && poly.z == hud_z_) {
@@ -380,6 +397,7 @@ void Raster::render_one(GeoPoly poly, int crtc_x, int crtc_y, int render_x, int 
                    std::min(poly.viewport[2] + wide + render_x, clip_maxx),
                    std::max((384 - poly.viewport[3]) + render_y, clip_miny),
                    std::min((384 - poly.viewport[1]) + render_y, clip_maxy)};
+    if (clip[2] > clip[3] || clip[0] > clip[1]) return;
 
     extra.checker = (poly.texheader[0] >> 15) & 1;
     extra.lumabase = u32(poly.texheader[1] & 0xff) << 7;

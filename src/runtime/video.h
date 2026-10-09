@@ -17,7 +17,10 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace rt {
@@ -27,6 +30,20 @@ public:
     // tile_ram: 0x01000000 (0x10000 bytes, u16 entries); char_ram: 0x01080000
     // (0x80000 bytes, u16 entries); both as the i960 wrote them.
     Video(const uint8_t *tile_ram, const uint8_t *char_ram);
+    ~Video();
+    Video(const Video &) = delete;
+    Video &operator=(const Video &) = delete;
+
+    // Threaded drawing (Switch): screen_update decodes the tilemaps and
+    // snapshots what the drawing reads (tile RAM, pens, polygons, palette,
+    // colour and luma RAM) on the calling thread, then draws the layers and
+    // the 3D on a worker while the emulation runs on. screen() is then the
+    // previous update's picture: one frame of extra latency. Texture RAM is
+    // read live (the game rarely writes it during a scene). Only for the
+    // plain CPU path (no widescreen, no external 3D); otherwise drawing
+    // stays on the calling thread.
+    void set_threaded(bool on);
+    void sync() const; // wait for the drawing in flight
 
     // Register writes (MAME handlers), fed by the bus as they happen.
     // palette_w after the bus has stored the write (palram holds the new value).
@@ -44,7 +61,7 @@ public:
     // (drawn from `polys` once per geometrizer frame, then reused), 2D front
     // layers. Output: 496x384, 0xAARRGGBB.
     void screen_update(const std::vector<GeoPoly> &polys, int windows, const VideoMem &mem);
-    const std::vector<uint32_t> &screen() const { return screen_; } // width() x H
+    const std::vector<uint32_t> &screen() const { return threaded_ ? display_ : screen_; } // width() x H
     // Widescreen (enhancement, 0 = off): the screen grows by `margin` pixels on
     // each side. The 3D layer fills it; the tilemap layers (HUD, text) stay
     // 496 wide in the centre. Not available with external 3D (the Vita path).
@@ -128,11 +145,36 @@ public:
 
     using ProfileClock = uint64_t (*)();
     void set_profile_clock(ProfileClock clock) { profile_clock_ = clock; }
-    const VideoProfile &last_profile() const { return profile_; }
+    const VideoProfile &last_profile() const { return profile_; } // threaded: this update's decode, the previous update's drawing
     static constexpr int W = 496, H = 384;
 
 private:
-    uint16_t tile(uint32_t i) const { return uint16_t(tile_ram_[i * 2] | tile_ram_[i * 2 + 1] << 8); }
+    uint16_t tile(uint32_t i) const { return uint16_t(tile_src_[i * 2] | tile_src_[i * 2 + 1] << 8); }
+    // One update's drawing, from state captured by screen_update.
+    struct Job {
+        const std::vector<GeoPoly> *polys = nullptr;
+        int windows = 0;
+        VideoMem mem{};
+        bool background_dirty = false, foreground_dirty = false;
+        bool threaded = false;
+        bool draw_3d = false;   // threaded: render the 3D layer afresh
+        bool have_3d = false;   // threaded: the 3D layer holds a picture
+        int crtc_x = 0, crtc_y = 0, render_x = 0, render_y = 0;
+    };
+    void compose(const Job &job, VideoProfile &profile);
+    void worker_loop();
+    bool threaded_ = false;
+    const uint8_t *tile_src_;                  // tile() reads: tile RAM, or (threaded) its snapshot
+    const uint32_t *pen_tab_;                  // drawing reads: pens_, or (threaded) their snapshot
+    std::vector<uint8_t> tile_snap_, palram_snap_, xlat_snap_, luma_snap_;
+    std::vector<uint32_t> pens_snap_, display_;
+    std::vector<GeoPoly> polys_snap_;
+    Job job_;
+    VideoProfile job_profile_;
+    std::thread worker_;
+    mutable std::mutex mutex_;
+    mutable std::condition_variable cv_;
+    bool job_pending_ = false, job_busy_ = false, quit_ = false;
     void build_layer(int layer); // pixmap_/flags_ for one tilemap
     void draw(std::vector<uint32_t> &bitmap, int layer, int flags);
     void draw_rect(std::vector<uint32_t> &dm, const uint16_t *mask, uint16_t tpri, int flags, int win, int L, int sx,

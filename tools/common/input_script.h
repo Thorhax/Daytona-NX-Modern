@@ -13,6 +13,8 @@
 namespace tools {
 
 // scripts/inputs format: "frames N", "<from>-<to> name=value" or "<at> name=value".
+// VF2: p1=MASK / p2=MASK press IN1 / IN2 bits (0x01 punch, 0x02 kick,
+// 0x04 guard, 0x10 down, 0x20 up, 0x40 right, 0x80 left).
 struct Script {
     struct Line {
         uint64_t from, to;
@@ -41,6 +43,9 @@ struct Script {
     }
     rt::Inputs at(uint64_t frame) const {
         rt::Inputs in;
+#if defined(M2_ROMSET_VF2)
+        in.in1 = 0xff; // VF2: IN1/IN2 are player 1/2 buttons and lever, all released
+#endif
         static const struct {
             const char *name;
             int port; // 0: IN0, 1: IN1
@@ -53,6 +58,8 @@ struct Script {
             if (l.name == "steer") in.steer = uint8_t(l.value);
             else if (l.name == "accel") in.accel = uint8_t(l.value);
             else if (l.name == "brake") in.brake = uint8_t(l.value);
+            else if (l.name == "p1") in.in1 &= uint8_t(~l.value); // VF2: bits pressed (active low)
+            else if (l.name == "p2") in.in2 &= uint8_t(~l.value);
             else if (l.name.compare(0, 4, "gear") == 0 && l.value) {
                 const int g = l.name[4] - '0';
                 if (g >= 0 && g < 5) in.in1 = uint8_t((in.in1 & ~0x70) | (gearvalue[g] << 4));

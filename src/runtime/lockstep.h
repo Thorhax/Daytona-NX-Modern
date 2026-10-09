@@ -43,6 +43,7 @@ public:
     // Free run: an interrupt line changed; take it at the next boundary.
     void poke() { next_count = std::min(next_count, count + 1); poked_ = true; }
     int interrupts() const { return taken_; }
+    size_t pending_events() const { return log_.size() - next_; }
 
 private:
     struct Event {
@@ -53,6 +54,7 @@ private:
         size_t fn = 0; // Call: index into calls_
     };
     std::vector<std::function<void()>> calls_;
+    std::vector<size_t> free_calls_; // calls_ slots whose event has run
     bool apply();
     void refresh_next();
     static void on_take(void *ctx, int vector, uint32_t ip, bool pending);

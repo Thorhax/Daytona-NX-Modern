@@ -12,7 +12,7 @@ namespace rt {
 
 namespace {
 
-enum Region { Program, MainData, CoproData, Polygons, Textures, CoproTables, SoundProgram, Pcm1, Pcm2 };
+enum Region { Program, MainData, CoproData, Polygons, Textures, CoproTables, SoundProgram, Pcm1, Pcm2, Samples1, Samples2 };
 
 struct Load {
     const char *file;
@@ -81,20 +81,54 @@ const Load kDaytona[] = {
 };
 #undef SHARED_LOADS
 
+// Virtua Fighter 2 (Version 2.1), Model 2A (vf2).
+const Load kVF2[] = {
+    {"epr-18385.12", 0x78ED2D41, Program, 0x000000, 0x020000},
+    {"epr-18386.13", 0x3418F428, Program, 0x000002, 0x020000},
+    {"epr-18387.14", 0x124A8453, Program, 0x040000, 0x020000},
+    {"epr-18388.15", 0x8D347980, Program, 0x040002, 0x020000},
+    {"mpr-17560.10", 0xD1389864, MainData, 0x000000, 0x200000},
+    {"mpr-17561.11", 0xB98D0101, MainData, 0x000002, 0x200000},
+    {"mpr-17558.8",  0x4B15F5A6, MainData, 0x400000, 0x200000},
+    {"mpr-17559.9",  0xD3264DE6, MainData, 0x400002, 0x200000},
+    {"mpr-17566.6",  0xFB41EF98, MainData, 0x800000, 0x200000},
+    {"mpr-17567.7",  0xC3396922, MainData, 0x800002, 0x200000},
+    {"mpr-17564.4",  0xD8062489, MainData, 0xC00000, 0x200000},
+    {"mpr-17565.5",  0x0517C6E9, MainData, 0xC00002, 0x200000},
+    {"mpr-17554.16", 0x27896D82, Polygons, 0x000000, 0x200000},
+    {"mpr-17548.20", 0xC95FACC2, Polygons, 0x000002, 0x200000},
+    {"mpr-17555.17", 0x4DF2810B, Polygons, 0x400000, 0x200000},
+    {"mpr-17549.21", 0xE0BCE0E6, Polygons, 0x400002, 0x200000},
+    {"mpr-17556.18", 0x41A47616, Polygons, 0x800000, 0x200000},
+    {"mpr-17550.22", 0xC36FF3F5, Polygons, 0x800002, 0x200000},
+    {"mpr-17553.25", 0x5DA1C5D3, Textures, 0x000000, 0x200000},
+    {"mpr-17552.24", 0xE91E7427, Textures, 0x000002, 0x200000},
+    {"mpr-17547.27", 0xBE940431, Textures, 0x800000, 0x200000},
+    {"mpr-17546.26", 0x042A194B, Textures, 0x800002, 0x200000},
+    {"opr-14742a.45", 0x90C6B117, CoproTables, 0x000000, 0x020000},
+    {"opr-14743a.46", 0xAE7F446B, CoproTables, 0x000002, 0x020000},
+    {"epr-17574.30", 0x4D4C3A55, SoundProgram, 0x000000, 0x080000},
+    {"mpr-17573.31", 0xE43557FE, Samples1, 0x000000, 0x200000},
+    {"mpr-17572.32", 0x4FEBECC8, Samples1, 0x200000, 0x200000},
+    {"mpr-17571.36", 0x51CAA584, Samples2, 0x000000, 0x200000},
+    {"mpr-17570.37", 0xBCCD324B, Samples2, 0x200000, 0x200000},
+};
+
 // Per set: its files; main_data's ROM_COPY source (copied to every 1 MB
 // from there up to 0xF00000); where the TGP program the i960 uploads at
-// boot sits in main_data (found by matching MAME's upload; the same 2,024
-// words in both sets, checked by CRC).
+// boot sits in main_data or program.
 struct Set {
     const char *name;
     const Load *loads;
     size_t count;
     uint32_t mirror_from, tgp_offset;
+    uint32_t tgp_words, tgp_crc;
+    bool tgp_in_program;
 };
-constexpr uint32_t kTgpWords = 2024, kTgpCrc = 0xD6D611DDu;
 const Set kSets[] = {
-    {"daytona93", kDaytona93, std::size(kDaytona93), 0x900000, 0x860020},
-    {"daytona", kDaytona, std::size(kDaytona), 0x800000, 0x800020},
+    {"daytona93", kDaytona93, std::size(kDaytona93), 0x900000, 0x860020, 2024, 0xD6D611DDu, false},
+    {"daytona", kDaytona, std::size(kDaytona), 0x800000, 0x800020, 2024, 0xD6D611DDu, false},
+    {"vf2", kVF2, std::size(kVF2), 0x1000000, 0x3e90, 3802, 0xfd8d0383u, true},
 };
 
 const Set &this_set() {
@@ -135,10 +169,10 @@ M2Board::Images import_rom_set(const std::string &zip_path) {
     img.program.assign(0x200000, 0);
     img.main_data.assign(0x2000000, 0);
     img.copro_data.assign(0x800000, 0);
-    img.polygons.assign(0x1000000, 0);
+    img.polygons.assign(0x2000000, 0);
     img.textures.assign(0x1000000, 0);
     img.copro_tables.assign(0x40000, 0);
-    img.sound_program.assign(0x40000, 0);
+    img.sound_program.assign(0x80000, 0);
     img.pcm1.assign(0x400000, 0);
     img.pcm2.assign(0x400000, 0);
     const Set &set = this_set();
@@ -162,6 +196,18 @@ M2Board::Images import_rom_set(const std::string &zip_path) {
             continue;
         case Pcm1: std::copy(data.begin(), data.end(), img.pcm1.begin() + l.offset); continue;
         case Pcm2: std::copy(data.begin(), data.end(), img.pcm2.begin() + l.offset); continue;
+        case Samples1:
+            for (uint32_t i = 0; i < l.size; i += 2) {
+                img.pcm1[l.offset + i] = data[i + 1];
+                img.pcm1[l.offset + i + 1] = data[i];
+            }
+            continue;
+        case Samples2:
+            for (uint32_t i = 0; i < l.size; i += 2) {
+                img.pcm2[l.offset + i] = data[i + 1];
+                img.pcm2[l.offset + i + 1] = data[i];
+            }
+            continue;
         }
         for (uint32_t w = 0; w < l.size / 2; w++) {
             (*r)[l.offset + w * 4] = data[w * 2];
@@ -177,9 +223,10 @@ const char *rom_set_name() { return M2_ROMSET; }
 
 std::vector<uint8_t> tgp_program(const M2Board::Images &img) {
     const Set &set = this_set();
-    const uint8_t *p = img.main_data.data() + set.tgp_offset;
-    if (crc32(p, kTgpWords * 4) != kTgpCrc) throw ZipError("TGP program not where expected");
-    return {p, p + kTgpWords * 4};
+    const uint8_t *base = set.tgp_in_program ? img.program.data() : img.main_data.data();
+    const uint8_t *p = base + set.tgp_offset;
+    if (crc32(p, set.tgp_words * 4) != set.tgp_crc) throw ZipError("TGP program not where expected");
+    return {p, p + set.tgp_words * 4};
 }
 
 } // namespace rt

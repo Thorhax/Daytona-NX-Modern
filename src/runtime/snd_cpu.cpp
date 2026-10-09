@@ -1,5 +1,6 @@
 #include "runtime/snd_cpu.h"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace snd {
@@ -7,6 +8,12 @@ namespace snd {
 void Cpu68k::reset() {
     sys = 0x2700;
     set_ccr(0);
+    if (is_scsp) {
+        if (ram.size() < 0x80000) ram.resize(0x80000, 0);
+        if (rom) {
+            std::copy_n(rom, std::min<size_t>(0x400, 1024), ram.data());
+        }
+    }
     a[7] = r32(0);
     pc = r32(4);
 }
@@ -37,16 +44,28 @@ bool dev_range(uint32_t a) {
 // 8-bit devices answer on the odd byte lane only; the even lane and unmapped
 // addresses read 0 (MAME's unmap value for this space).
 uint8_t Cpu68k::dev_r8(uint32_t addr) {
+    if (is_scsp) {
+        if (dev) return dev->read(addr);
+        return 0;
+    }
     if ((addr & 1) && dev_range(addr)) return dev->read(addr);
     return 0;
 }
 
 uint16_t Cpu68k::dev_r16(uint32_t addr) {
+    if (is_scsp) {
+        if (dev) return dev->read16(addr);
+        return 0;
+    }
     if (dev_range(addr)) return dev->read(addr | 1);
     return 0;
 }
 
 void Cpu68k::dev_w(uint32_t addr, uint16_t data, uint16_t mem_mask) {
+    if (is_scsp) {
+        if (dev) dev->write(addr, data, mem_mask);
+        return;
+    }
     const uint32_t even = addr & ~1u;
     if (dev_range(addr)) {
         if (mem_mask & 0x00ff) dev->write(even | 1, data & 0xff);

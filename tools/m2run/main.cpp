@@ -78,29 +78,37 @@ void write_wav(const std::string &path, const std::vector<float> &mix, uint32_t 
 int main(int argc, char **argv) {
     if (argc < 3) {
         std::fprintf(stderr, "usage: m2run IMAGES_DIR FRAMES [--inputs FILE] [--dump DIR --every N] [--wav FILE] "
-                             "[--aspect W:H]\n");
+                             "[--aspect W:H] [--threaded-video] [--hashes FILE]\n");
         return 2;
     }
     const std::string dir = argv[1];
     const uint64_t frames = std::strtoull(argv[2], nullptr, 10);
-    std::string dump_dir, inputs_path, wav_path, nvram_dir, save_nvram_dir, link_next;
+    std::string dump_dir, inputs_path, wav_path, nvram_dir, save_nvram_dir, link_next, hashes_path;
     int link_listen = 0;
-    bool link_sync = false, native_check = false;
+    bool link_sync = false, native_check = false, threaded_video = false, p1_inf_hp = false;
     uint64_t every = 0;
     double aspect = 0;
     int frame_skip = 0;
+    float fx_gain = 1.0f;
+    std::string ram_dir; // with --every: main RAM then work RAM, raw
     bool hud_edges = false, stretch_backdrop = false;
     for (int i = 3; i < argc; i++) {
         if (!std::strcmp(argv[i], "--hud-edges")) hud_edges = true;
         if (!std::strcmp(argv[i], "--stretch-backdrop")) stretch_backdrop = true;
         if (!std::strcmp(argv[i], "--link-sync")) link_sync = true;
         if (!std::strcmp(argv[i], "--native-audio-check")) native_check = true;
+        if (!std::strcmp(argv[i], "--threaded-video")) threaded_video = true;
+        if (!std::strcmp(argv[i], "--p1-inf-hp")) p1_inf_hp = true;
     }
     for (int i = 3; i + 1 < argc; i += 2) {
         if (!std::strcmp(argv[i], "--hud-edges") || !std::strcmp(argv[i], "--stretch-backdrop") ||
-            !std::strcmp(argv[i], "--link-sync") || !std::strcmp(argv[i], "--native-audio-check")) { i--; continue; }
+            !std::strcmp(argv[i], "--link-sync") || !std::strcmp(argv[i], "--native-audio-check") ||
+            !std::strcmp(argv[i], "--threaded-video") || !std::strcmp(argv[i], "--p1-inf-hp")) { i--; continue; }
         if (!std::strcmp(argv[i], "--inputs")) inputs_path = argv[i + 1];
         else if (!std::strcmp(argv[i], "--dump")) dump_dir = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--hashes")) hashes_path = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--ram-dump")) ram_dir = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--fx-gain")) fx_gain = float(std::atof(argv[i + 1]));
         else if (!std::strcmp(argv[i], "--every")) every = std::strtoull(argv[i + 1], nullptr, 10);
         else if (!std::strcmp(argv[i], "--wav")) wav_path = argv[i + 1];
         else if (!std::strcmp(argv[i], "--nvram")) nvram_dir = argv[i + 1];
@@ -135,6 +143,17 @@ int main(int argc, char **argv) {
             game.board().set_link(link.get(), link_sync);
         }
         game.set_frame_skip(frame_skip);
+        if (threaded_video) game.board().video().set_threaded(true);
+        if (game.sound()) game.sound()->set_effects_gain(fx_gain);
+        game.set_p1_infinite_health(p1_inf_hp);
+        if (!hashes_path.empty()) { // per-frame profile in the hashes file
+            static const auto clock = [] {
+                return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+            };
+            game.set_profile_clock(+clock);
+        }
+        FILE *hashes = hashes_path.empty() ? nullptr : std::fopen(hashes_path.c_str(), "w");
         if (aspect > 0) {
             game.set_aspect(aspect);
             game.set_hud_edges(hud_edges);
@@ -176,6 +195,25 @@ int main(int argc, char **argv) {
                 fm.insert(fm.end(), a.begin(), a.end());
                 pcm.insert(pcm.end(), b.begin(), b.end());
             }
+            if (hashes) {
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                const rt::FrameProfile &fp = game.last_profile();
+                static uint64_t last_instr = 0;
+                const uint64_t instr = game.instructions() - last_instr;
+                last_instr = game.instructions();
+                std::fprintf(hashes, "%" PRIu64 " %016" PRIx64 " %.1f core=%.0f geo=%.0f sound=%.0f instr=%" PRIu64 "\n",
+                             game.board().frame(), game.board().video().screen_hash(), ms, double(fp.core()) / 1000.0,
+                             double(fp.geometry) / 1000.0, double(fp.sound) / 1000.0, instr);
+            }
+            if (!ram_dir.empty() && every && game.board().frame() % every == 0) {
+                char path[512];
+                std::snprintf(path, sizeof path, "%s/ram_%05" PRIu64 ".bin", ram_dir.c_str(), game.board().frame());
+                if (FILE *d = std::fopen(path, "wb")) {
+                    std::fwrite(game.board().main_ram().data(), 1, game.board().main_ram().size(), d);
+                    std::fwrite(game.board().work_ram().data(), 1, game.board().work_ram().size(), d);
+                    std::fclose(d);
+                }
+            }
             if (!dump_dir.empty() && every && game.board().frame() % every == 0) {
                 char path[512];
                 std::snprintf(path, sizeof path, "%s/run_%05" PRIu64 ".rgb", dump_dir.c_str(), game.board().frame());
@@ -185,6 +223,7 @@ int main(int argc, char **argv) {
                 }
             }
         }
+        if (hashes) std::fclose(hashes);
         if (!save_nvram_dir.empty()) tools::save_nvram(game, save_nvram_dir);
         const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         std::printf("m2run: %" PRIu64 " frames, %" PRIu64 " i960 instructions (all native), %" PRIu64

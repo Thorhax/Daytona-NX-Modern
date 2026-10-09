@@ -54,13 +54,26 @@ void IoBoard::write(uint32_t index, uint8_t v) {
 // Board
 
 M2Board::M2Board(Images images)
-    : img_(std::move(images)), ram_(0x20000), work_(0x100000), cpuctl_(0x1000), backup_(0x4000, 0xff), tile_(0x10000),
+    : img_(std::move(images)), ram_(0x40000), work_(0x100000), cpuctl_(0x1000), backup_(0x4000, 0xff), tile_(0x10000),
       chr_(0x80000), palette_(0x4000), xlat_(0xc000), tex0_(0x200000), tex1_(0x200000), luma_(0x20000), fb_a_(0x80000),
-      fb_b_(0x80000), comm_(0x4000), pages_(size_t(1) << (32 - kPageBits)), tgp_(img_.copro_tables, img_.copro_data) {
-    // model2o memory map (MAME model2_base_mem, model2_tgp_mem, model2o_mem)
+      fb_b_(0x80000), comm_(0x4000), pages_(size_t(1) << (32 - kPageBits)), tgp_(img_.copro_tables, img_.copro_data),
+      io315_(io_.inputs, io_.eeprom, io_.eeprom_dirty) {
+    is_model2a_ = (img_.program.size() > 0x100000);
+#if defined(M2_ROMSET_VF2)
+    is_model2a_ = true;
+#endif
+    if (is_model2a_) std::fill(std::begin(timervals_), std::end(timervals_), 0xfffffu); // MAME machine_reset
+
+    // memory map
     map(0x00000000, 0x001fffff, Rom, img_.program.data());
-    map(0x00200000, 0x0021ffff, Ram, ram_.data());
-    map(0x00220000, 0x0023ffff, Rom, img_.program.data() + 0x20000);
+    if (is_model2a_) {
+        // Model 2A-CRX: 0x00200000-0x0023ffff (256 KB) burst RAM
+        map(0x00200000, 0x0023ffff, Ram, ram_.data());
+    } else {
+        // Model 2 original: 128 KB RAM at 0x200000, ROM mirrored at 0x220000
+        map(0x00200000, 0x0021ffff, Ram, ram_.data());
+        map(0x00220000, 0x0023ffff, Rom, img_.program.data() + 0x20000);
+    }
     map(0x00500000, 0x005fffff, Ram, work_.data());
     map(0x00800000, 0x00807fff, Dev, nullptr, 0, false);
     map(0x00880000, 0x00887fff, Dev, nullptr, 0, false);
@@ -171,12 +184,80 @@ void M2Board::vblank_end() {
 }
 
 bool M2Board::in_idle_loop() const {
+    const uint32_t ip = cpu_->m_IP;
+    if (is_model2a_) {
+        return (ip >= 0x0f7c && ip <= 0x0f8c) || (ip >= 0x10f90 && ip <= 0x10fa4);
+    }
     // The game's wait-for-vblank loops (0x12b0: until the frame counter at
     // 0x00500000 changes; 0x12f0: until it reaches 2). MAME takes 99% of
     // vblank interrupts here; the rest land in CPU-bound code such as the
     // boot-time texture upload at 0x1388.
-    const uint32_t ip = cpu_->m_IP;
     return (ip >= 0x12b0 && ip <= 0x12bb) || (ip >= 0x12f0 && ip <= 0x12ff);
+}
+
+// --- timers (MAME timers_r/timers_w/model2_timer_cb) --------------------------
+// Four 20-bit timers count down at 25 MHz from the value written; at zero
+// they stop, read 0xfffff, and raise request bit 2+n if it is enabled.
+// Daytona reloads timer 0 each frame and never enables its interrupt, so on
+// the original Model 2 the value is kept without a clock (as before). VF2
+// (Model 2A) runs timer 3 with its interrupt enabled: without it the game's
+// timer-driven work (the title's 3D logo, stage set-up) stalls for seconds.
+// Time is i960 instructions (kFrameInstructions per 57.52 Hz frame) plus the time the
+// game loop skips while the game idles (skip_time): a frame that ends early
+// in the wait-for-vblank loop still lasts a whole frame for the timers.
+
+uint64_t M2Board::vtime() const { return ls_->count + skew_; }
+
+uint64_t M2Board::timer_ticks_to_instr(uint64_t ticks) {
+    return (ticks * kTimerInstrPerSec + 12'500'000) / 25'000'000;
+}
+
+uint32_t M2Board::timer_read(uint32_t n) {
+    if (is_model2a_ && timer_run_[n]) {
+        const uint64_t elapsed = (vtime() - timer_start_[n]) * 25'000'000 / kTimerInstrPerSec;
+        timervals_[n] = elapsed >= timer_orig_[n] ? 0 : uint32_t(timer_orig_[n] - elapsed);
+    }
+    return timervals_[n];
+}
+
+void M2Board::timer_write(uint32_t n, uint32_t data, uint32_t mask) {
+    uint32_t &t = timervals_[n];
+    t = (t & ~mask) | (data & mask);
+    if (!is_model2a_) return;
+    timer_orig_[n] = t;
+    timer_start_[n] = vtime();
+    timer_due_[n] = timer_start_[n] + std::max<uint64_t>(1, timer_ticks_to_instr(t));
+    timer_run_[n] = true;
+    timer_arm(n);
+}
+
+void M2Board::timer_arm(uint32_t n) {
+    const uint64_t gen = ++timer_gen_[n];
+    const uint64_t at = timer_due_[n] > vtime() ? timer_due_[n] - skew_ : ls_->count + 1;
+    ls_->add_callback(at, [this, n, gen] {
+        if (timer_gen_[n] != gen || !timer_run_[n]) return;
+        const uint32_t line = 1u << (n + 2);
+        if (intena_ & line) {
+            intreq_ |= line;
+            irq_update();
+        }
+        timervals_[n] = 0xfffff;
+        timer_run_[n] = false;
+    });
+}
+
+uint64_t M2Board::next_timer_due() const {
+    uint64_t due = UINT64_MAX;
+    for (uint32_t n = 0; n < 4; ++n)
+        if (timer_run_[n] && (intena_ & (1u << (n + 2)))) due = std::min(due, timer_due_[n]);
+    return due;
+}
+
+void M2Board::skip_time(uint64_t instructions) {
+    if (!instructions) return;
+    skew_ += instructions;
+    for (uint32_t n = 0; n < 4; ++n)
+        if (timer_run_[n]) timer_arm(n); // due earlier in instruction counts now
 }
 
 // --- sound UART (i8251, transmit side) ------------------------------------------
@@ -243,15 +324,28 @@ uint32_t M2Board::dev_read(uint32_t addr, uint32_t mask) {
         const uint32_t o = addr - 0x00980030;
         return uint32_t(id[o]) | uint32_t(id[o + 1]) << 8 | uint32_t(id[o + 2]) << 16 | uint32_t(id[o + 3]) << 24;
     }
-    if (addr >= 0x00f00000 && addr <= 0x00f0000f) return timervals_[(addr >> 2) & 3];
+    if (addr >= 0x00f00000 && addr <= 0x00f0000f) return timer_read((addr >> 2) & 3);
     if ((addr & ~0x10000u) == 0x01a04000) { // cn_r, fg_r
         if (comm_board_) // fg_r takes frames in: only when that lane is read
             return uint32_t(comm_board_->cn_r()) | ((mask & 0xff0000) ? uint32_t(comm_board_->fg_r()) << 16 : 0);
         return uint32_t(comm_cn_ | 0xfe) | uint32_t(comm_fg_) << 16;
     }
-    if (addr >= 0x01c00000 && addr <= 0x01c00fff) { // MB8421 through umask 0x00ff00ff
-        const uint32_t i = ((addr & 0xfff) >> 2) * 2;
-        return uint32_t(io_.read(i)) | uint32_t(io_.read(i + 1)) << 16;
+    if (is_model2a_) {
+        if (addr >= 0x01c00000 && addr <= 0x01c0001f) {
+            const uint32_t i = ((addr & 0x1f) >> 2) * 2;
+            return uint32_t(io315_.read(i)) | (uint32_t(io315_.read(i + 1)) << 16);
+        }
+        if (addr >= 0x01c00020 && addr <= 0x01c00fff) return 0;
+    } else {
+        if (addr >= 0x01c00000 && addr <= 0x01c00fff) { // MB8421 dual-port RAM
+            const uint32_t i = ((addr & 0xfff) >> 2) * 2;
+            return uint32_t(io_.read(i)) | uint32_t(io_.read(i + 1)) << 16;
+        }
+    }
+    if (addr >= 0x01c80000 && addr <= 0x01c80003) {
+        // i8251 UART: lane 0 data (rx), lane 2 status (TxRDY, etc.)
+        const uint32_t status = (uart_txrdy_ ? 0x05 : 0x00) | 0x80;
+        return status << 16;
     }
     if (addr >= 0x10000000 && addr <= 0x101fffff) return uint32_t(render_unk_) << 14 | uint32_t(render_mode_) << 2 | uint32_t(render_test_);
     if (addr >= 0x10400000 && addr <= 0x105fffff) return uint32_t(geo_->polys.size()); // polygon_count_r
@@ -281,11 +375,7 @@ void M2Board::dev_write(uint32_t addr, uint32_t data, uint32_t mask) {
     default: break;
     }
     if (addr >= 0x00f00000 && addr <= 0x00f0000f) {
-        // timers_w: count down at 25 MHz and raise request bit 2+n. Daytona
-        // reloads timer 0 each frame and never enables its interrupt, so the
-        // value is kept without a clock.
-        uint32_t &t = timervals_[(addr >> 2) & 3];
-        t = (t & ~mask) | (data & mask);
+        timer_write((addr >> 2) & 3, data, mask);
         return;
     }
     if ((addr & ~0x100000u) == 0x01040000) { if (mask & 0xffff) video_->xhout_w(uint16_t(data)); return; }
@@ -300,11 +390,21 @@ void M2Board::dev_write(uint32_t addr, uint32_t data, uint32_t mask) {
         if (mask & 0xff0000) comm_fg_ = uint8_t(data >> 16);
         return;
     }
-    if (addr >= 0x01c00000 && addr <= 0x01c00fff) {
-        const uint32_t i = ((addr & 0xfff) >> 2) * 2;
-        if (mask & 0x000000ff) io_.write(i, uint8_t(data));
-        if (mask & 0x00ff0000) io_.write(i + 1, uint8_t(data >> 16));
-        return;
+    if (is_model2a_) {
+        if (addr >= 0x01c00000 && addr <= 0x01c0001f) {
+            const uint32_t i = ((addr & 0x1f) >> 2) * 2;
+            if (mask & 0x000000ff) io315_.write(i, uint8_t(data));
+            if (mask & 0x00ff0000) io315_.write(i + 1, uint8_t(data >> 16));
+            return;
+        }
+        if (addr >= 0x01c00020 && addr <= 0x01c00fff) return;
+    } else {
+        if (addr >= 0x01c00000 && addr <= 0x01c00fff) {
+            const uint32_t i = ((addr & 0xfff) >> 2) * 2;
+            if (mask & 0x000000ff) io_.write(i, uint8_t(data));
+            if (mask & 0x00ff0000) io_.write(i + 1, uint8_t(data >> 16));
+            return;
+        }
     }
     if (addr >= 0x01c80000 && addr <= 0x01c80003) { // i8251, umask16 0x00ff: lane 0 data, lane 2 control
         if (mask & 0x000000ff) uart_write_data(uint8_t(data));

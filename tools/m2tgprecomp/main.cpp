@@ -188,9 +188,9 @@ Insn decode(uint32_t pc, uint32_t o) {
                 in.body = b + " t.r = " + hx(o & 0xff) + ";";
             return in;
         case 3: break; // set: MAME does nothing (flag mapping unknown)
-        default: return bad("0f subop " + hx(sub2) + " unimplemented in MAME");
+        default: break; // MAME fallback: execute alu_pre/alu_post_1 only
         }
-        in.body = b + " t.alu_post_1<" + A + ">();";
+        in.body = b + " t.alu_post_1<" + A + ">(); t.alu_post_2<" + A + ">();";
         return in;
     }
     if (type >= 0x10 && type <= 0x1f) { // ldi

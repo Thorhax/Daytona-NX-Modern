@@ -52,6 +52,16 @@ Geo::Geo(const std::vector<uint8_t> &polygons, const std::vector<uint8_t> &textu
     geo_.polygon_rom_mask = uint32_t(polygon_rom_.size() - 1);
 }
 
+// MAME's (s32) casts on its x86-64 build: NaN and out-of-range give
+// 0x80000000. A plain cast is undefined there, and ARM64 saturates (NaN to
+// 0): a vertex at z = 0 made 1/z +inf, 0x7fffffff, and the z-clip test below
+// culled polygons on the Switch that MAME and the desktop build keep.
+static inline int32_t s32_x86(double v)
+{
+	if (!(v >= -2147483648.0 && v < 2147483648.0)) return INT32_MIN;
+	return int32_t(v);
+}
+
 static inline void transform_point(GeoVertex *point, float *matrix)
 {
 	float tx = (point->x * matrix[0]) + (point->y * matrix[3]) + (point->pz * matrix[6]) + (matrix[9]);
@@ -212,7 +222,7 @@ inline bool Geo::check_culling(raster_state *raster, uint32_t attr, float min_z,
 		return true;
 
 	/* if the minimum z value is bigger than the master z clip value, don't render */
-	if (raster->master_z_clip != 0xff && (int32_t)(1.0 / min_z) > raster->master_z_clip)
+	if (raster->master_z_clip != 0xff && s32_x86(1.0 / min_z) > raster->master_z_clip)
 		return true;
 
 	/* if the maximum z value is < 0 then we can safely clip the entire polygon */
@@ -808,7 +818,7 @@ void Geo::geo_parse_np_ns(geo_state *geo, GeoPtr input, uint32_t count)
 			luminance = (luminance * texparam->diffuse) + texparam->ambient;
 			luminance = std::clamp(luminance, 0.0f, 255.0f);
 
-			luma = (int32_t)luminance;
+			luma = s32_x86(luminance);
 
 			/* add the face bit to the luma */
 			luma += face;
@@ -956,7 +966,7 @@ void Geo::geo_parse_np_s(geo_state *geo, GeoPtr input, uint32_t count)
 			luminance = (luminance * texparam->diffuse) + texparam->ambient + specular;
 			luminance = std::clamp(luminance, 0.0f, 255.0f);
 
-			luma = (int32_t)luminance;
+			luma = s32_x86(luminance);
 
 			/* add the face bit to the luma */
 			luma += face;
@@ -1105,7 +1115,7 @@ void Geo::geo_parse_nn_ns(geo_state *geo, GeoPtr input, uint32_t count)
 			luminance = (luminance * texparam->diffuse) + texparam->ambient;
 			luminance = std::clamp(luminance, 0.0f, 255.0f);
 
-			luma = (int32_t)luminance;
+			luma = s32_x86(luminance);
 
 			/* add the face bit to the luma */
 			luma += face;
@@ -1296,7 +1306,7 @@ void Geo::geo_parse_nn_s(geo_state *geo, GeoPtr input, uint32_t count)
 			luminance = (luminance * texparam->diffuse) + texparam->ambient + specular;
 			luminance = std::clamp(luminance, 0.0f, 255.0f);
 
-			luma = (int32_t)luminance;
+			luma = s32_x86(luminance);
 
 			/* add the face bit to the luma */
 			luma += face;

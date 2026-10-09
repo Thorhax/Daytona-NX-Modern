@@ -55,7 +55,7 @@ def words(data):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--set", default="daytona93", choices=["daytona93", "daytona"])
+    ap.add_argument("--set", default="daytona93", choices=["daytona93", "daytona", "vf2"])
     ap.add_argument("--build-dir", default="build")
     ap.add_argument("--config", default="Release")
     ap.add_argument("--append", action="store_true", help="add the new seeds to seeds/<set>.txt")
@@ -70,11 +70,11 @@ def main():
 
     img = open(prog_path, "rb").read()
 
-    # Program ROM at 0, its upper 128 KiB mirrored at 0x220000 (as m2recomp).
+    # Program ROM at 0, its upper 128 KiB mirrored at 0x220000 on Model 2/2O.
     def off(a):
         if 0x800 <= a < len(img):
             return a
-        if 0x220000 <= a < 0x240000:
+        if args.set != "vf2" and 0x220000 <= a < 0x240000:
             return a - 0x200000
         return None
 

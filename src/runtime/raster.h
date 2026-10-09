@@ -103,8 +103,8 @@ private:
     std::vector<std::size_t> order_;
 #if defined(__SWITCH__)
     class RasterWorker;
-    std::unique_ptr<RasterWorker> worker_;
-    std::array<ShadeEntry, 64> worker_shades_;
+    std::unique_ptr<RasterWorker> workers_[2];
+    std::array<ShadeEntry, 64> worker_shades_[2];
 #endif
 #endif
 

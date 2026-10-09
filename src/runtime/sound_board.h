@@ -12,6 +12,7 @@
 #pragma once
 
 #include "runtime/multipcm.h"
+#include "runtime/scsp.h"
 #include "runtime/snd_gen_support.h"
 
 #include "ymfm_opn.h"
@@ -43,9 +44,11 @@ public:
 
     // Rendered audio since the last take: interleaved stereo floats, already
     // at the board's mix gains (YM 0.30, each MultiPCM 0.50).
+    bool is_scsp() const { return cpu_.is_scsp; }
     double fm_rate() const { return double(kYmClock) / 144; }
-    double pcm_rate() const { return double(kPcmClock) / 224; }
+    double pcm_rate() const { return cpu_.is_scsp ? 44100.0 : double(kPcmClock) / 224; }
     std::vector<float> take_fm() { return std::exchange(fm_out_, {}); }
+    void set_effects_gain(float gain) { if (scsp_) scsp_->set_effects_gain(gain); } // see Scsp::set_effects_gain
     std::vector<float> take_pcm() { return std::exchange(pcm_out_, {}); }
 
     uint64_t instructions() const { return sched_.count; }
@@ -53,7 +56,8 @@ public:
 
     // Devices (the 68000's view)
     uint8_t read(uint32_t addr) override;
-    void write(uint32_t addr, uint16_t data) override;
+    uint16_t read16(uint32_t addr) override;
+    void write(uint32_t addr, uint16_t data, uint16_t mem_mask = 0xffff) override;
 
     // ymfm_interface
     void ymfm_set_timer(uint32_t tnum, int32_t duration_in_clocks) override;
@@ -88,6 +92,12 @@ private:
     MultiPcm pcm1_, pcm2_;
     uint64_t pcm_done_ = 0;
     std::vector<float> pcm_out_;
+
+    // SCSP support (Model 2A+)
+    void scsp_timer_arm(int tnum, uint32_t prescale, uint32_t count);
+    uint64_t scsp_timer_gen_[3] = {};
+    std::vector<uint8_t> samples_rom_;
+    std::unique_ptr<Scsp> scsp_;
 };
 
 } // namespace snd
