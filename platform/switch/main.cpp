@@ -533,6 +533,9 @@ int main(int, char **) {
             // of extra latency), which pays for the wider 16:9 picture.
             game->board().video().set_threaded(true);
             game->set_aspect(screen_aspect()); // HUD stays centred (no HUD-at-edges)
+            // The game picks scenery cells for its 4:3 view; at 16:9 list the
+            // whole 5x5 around the car so the sides do not cut off (Enhance).
+            rt::GameLoop::set_draw_distance(widescreen ? 1 : 0);
             game->set_stretch_backdrop(true);  // race sky stretched across 16:9 (its ends do not meet, so no wrap)
             game->set_pillarbox_2d(true);      // 2D screens (GENTLEMEN START YOUR ENGINES...): black side bars
 #endif
@@ -726,6 +729,7 @@ int main(int, char **) {
                 case 9:
                     widescreen = !widescreen;
                     if (game) game->set_aspect(screen_aspect());
+                    rt::GameLoop::set_draw_distance(widescreen ? 1 : 0);
                     status = widescreen ? "Widescreen 16:9: more of the road at the sides; the HUD stays centred."
                                         : "Original 4:3 screen.";
                     break;

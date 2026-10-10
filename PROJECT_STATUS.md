@@ -35,6 +35,14 @@ Daytona-NX-Modern). Switch build: `bash scripts/build_switch.sh` ->
   side bars). The stretch is integer now (weights per column, at most 1 off
   the old float result in 2,047 bytes over 60 frames). Threaded Switch path =
   standard path over 6,000 frames with both options.
+- Hardware test 2: 38 of 38 windows at 57.52 fps. Still some clipping at
+  the sides: scenery (grandstands, trees) cut off in the margins. The game
+  picks scenery by course cell for its 4:3 view (visibility masks over the
+  5x5 around the car, HANDOFF "Draw distance"). At 16:9 the Switch now sets
+  draw distance +1 (all 5x5 cells, polygon budget 10000; game logic lists
+  untouched). Host, race_basic 16:9 every 50th frame: 13 of 120 frames gain
+  margin pixels (stands and trees past the 4:3 edge); raster mean 13.6 ->
+  13.7 ms.
 - Note: `build-daytona` made by recompile.py has no build type (-O0); the
   game's geometrizer self-test then takes minutes. Configure it with
   `-DCMAKE_BUILD_TYPE=RelWithDebInfo`.
