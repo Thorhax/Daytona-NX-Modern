@@ -18,6 +18,11 @@ Controls: B punch, A kick, Y guard, X guard+kick (ZL/ZR/L/R also guard),
 Plus start, Minus coin, Plus+Minus menu. ZL+ZR+D-pad Up toggles player 1
 infinite health. Notes on the port: `PROJECT_STATUS.md`.
 
+Widescreen: 16:9 by default (menu SCREEN 16:9 / 4:3). Fights show more of
+the stage at the sides; 2D menu screens get black side bars. The arcade's 2D
+sky/horizon layers are only 512 px wide, so at some camera angles a small
+seam can show in the sky past the old 4:3 edge.
+
 The Daytona USA documentation follows.
 
 # Daytona USA static recompilation
