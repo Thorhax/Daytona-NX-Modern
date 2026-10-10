@@ -1,29 +1,28 @@
-# Virtua Fighter 2 for Nintendo Switch (Sega Model 2A static recompilation)
+# Daytona USA for Nintendo Switch (Daytona-NX-Modern)
 
-This repository is the Daytona USA static recompilation extended to Virtua
-Fighter 2 (Model 2A, MAME set `vf2`), with a native Nintendo Switch port.
-The i960 game program, the TGP program and the sound 68000 program are
-statically recompiled to C++. The Model 2A board, the SCSP sound chip, the
-geometrizer, the rasterizer and the tilemaps are native C++.
-
-No game data is in this repository or in the release: supply your own MAME
-`vf2.zip` and place it at `sdmc:/switch/vf2/vf2.zip` next to `vf2.nro`.
+A native Nintendo Switch port of the Daytona USA static recompilation below.
+No game data is in this repository or in the release: put your own MAME
+`daytona.zip` (Revision A) at `sdmc:/switch/daytona/daytona.zip` next to
+`daytona.nro`.
 
 Switch build (devkitPro, or Docker with `devkitpro-mesa-rust:latest`):
 
-    python3 scripts/recompile.py --set vf2 --build-dir build-vf2   # needs roms/vf2.zip
-    bash scripts/build_switch_vf2.sh
+    python3 scripts/recompile.py --set daytona --build-dir build-daytona   # needs roms/daytona.zip
+    bash scripts/build_switch.sh
 
-Controls: B punch, A kick, Y guard, X guard+kick (ZL/ZR/L/R also guard),
-Plus start, Minus coin, Plus+Minus menu. ZL+ZR+D-pad Up toggles player 1
-infinite health. Notes on the port: `PROJECT_STATUS.md`.
+Controls: left stick steer, ZR gas, ZL brake (or right stick up/down),
+X shift up, B shift down (D-pad Up/Down: 4th/1st), views L bumper, A chase,
+Y far, R cockpit; Plus start, Minus coin, Plus+Minus menu, L3 test,
+R3 service. In test mode R/L move the cursor.
 
-Widescreen: 16:9 by default (menu SCREEN 16:9 / 4:3). Fights show more of
-the stage at the sides; 2D menu screens get black side bars. The arcade's 2D
-sky/horizon layers are only 512 px wide, so at some camera angles a small
-seam can show in the sky past the old 4:3 edge.
+Widescreen: 16:9 by default (menu SCREEN 16:9 / 4:3). More of the road at
+the sides with the HUD centred; the race sky is stretched across the width
+and 2D screens get black side bars. With 16:9 the game draws every scenery
+block around the car (draw distance +1) so stands and trees reach the edges.
 
-The Daytona USA documentation follows.
+The same tree also builds the Virtua Fighter 2 port
+([VF2-NX-Modern](https://github.com/Thorhax/VF2-NX-Modern)); notes on both
+ports are in `PROJECT_STATUS.md`.
 
 # Daytona USA static recompilation
 
