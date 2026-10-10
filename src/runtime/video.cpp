@@ -466,7 +466,7 @@ const std::vector<GeoPoly> &Video::gpu_polys() const {
 
 void Video::screen_update(const std::vector<GeoPoly> &polys, int windows, const VideoMem &mem) {
     // Threaded drawing only on the plain CPU path (see set_threaded).
-    const bool threaded = threaded_ && !margin_ && !external_3d_;
+    const bool threaded = threaded_ && !(margin_ && hud_edges_) && !external_3d_;
     VideoProfile drawn{};
     if (threaded_) {
         sync();
@@ -599,13 +599,14 @@ void Video::compose(const Job &job, VideoProfile &profile) {
                     screen_[size_t(y) * out_w + size_t(at + x)] = pixel;
     };
 #ifdef M2_VITA_RENDER_OPT
+    // The 2D layers. With threaded 3D, drawn while the raster workers start
+    // on the polygons (separate buffers), else now.
+    auto tiles = [&]() {
     before = ticks();
     if (job.background_dirty) {
         // All tile writes are replacements, not blends. Drawing the back
         // layers over pen 0 is identical to zero + transparent copy over pen 0.
-        std::fill(background_.begin(), background_.end(), pen_tab_[0]);
-        for (int layer = 3; layer >= 2; --layer) draw(background_, layer << 1, DRAW_OPAQUE);
-        for (int layer = 1; layer >= 0; --layer) draw(background_, layer << 1, 0);
+        draw_back_layers(background_, wrap_back() ? 512 : W);
         ++background_generation_;
         profile.layers_rebuilt = true;
     }
@@ -617,19 +618,38 @@ void Video::compose(const Job &job, VideoProfile &profile) {
     }
     profile.tile_draw = ticks() - before;
     before = ticks();
-    std::copy_n(background_.data(), screen_.size(), screen_.data());
+    if (wrap_back()) {
+        copy_back_wrapped(background_.data());
+    } else if (margin_) { // widescreen: the 496-wide back layers in the centre
+        for (int y = 0; y < H; ++y)
+            std::copy_n(background_.data() + size_t(y) * W, W, screen_.data() + size_t(y) * out_w + size_t(margin_));
+    } else {
+        std::copy_n(background_.data(), screen_.size(), screen_.data());
+    }
     profile.composite += ticks() - before;
+    };
+    const bool tiles_alongside = job.threaded && job.draw_3d && !external_3d_ && !(margin_ && hud_edges_);
+    if (!tiles_alongside) tiles();
 #else
     before = ticks();
-    std::fill(screen_.begin(), screen_.end(), pen_tab_[0]);
-    std::fill(sys24_.begin(), sys24_.end(), 0u);
-    for (int layer = 3; layer >= 2; --layer) draw(sys24_, layer << 1, DRAW_OPAQUE);
-    for (int layer = 1; layer >= 0; --layer) draw(sys24_, layer << 1, 0);
-    profile.tile_draw += ticks() - before;
-    profile.layers_rebuilt = true;
-    before = ticks();
-    copy_trans(sys24_.data(), W, W, margin_);
-    profile.composite += ticks() - before;
+    if (wrap_back()) {
+        draw_back_layers(back512_, 512);
+        profile.tile_draw += ticks() - before;
+        profile.layers_rebuilt = true;
+        before = ticks();
+        copy_back_wrapped(back512_.data());
+        profile.composite += ticks() - before;
+    } else {
+        std::fill(screen_.begin(), screen_.end(), pen_tab_[0]);
+        std::fill(sys24_.begin(), sys24_.end(), 0u);
+        for (int layer = 3; layer >= 2; --layer) draw(sys24_, layer << 1, DRAW_OPAQUE);
+        for (int layer = 1; layer >= 0; --layer) draw(sys24_, layer << 1, 0);
+        profile.tile_draw += ticks() - before;
+        profile.layers_rebuilt = true;
+        before = ticks();
+        copy_trans(sys24_.data(), W, W, margin_);
+        profile.composite += ticks() - before;
+    }
 #endif
     rendered_now_ = false;
     if (external_3d_) {
@@ -661,10 +681,22 @@ void Video::compose(const Job &job, VideoProfile &profile) {
         if (race_hud != hud_on_) { hud_on_ = race_hud; set_raster_hud_moves(); render_done_ = false; }
     }
     if (job.threaded) {
+        // Widescreen (without the HUD at the edges) works here too: the
+        // margin only changes between updates, after a sync.
         if (job.draw_3d) {
+#ifdef M2_VITA_RENDER_OPT
+            const uint64_t start = ticks();
+            raster_.render(polys, windows, mem, job.crtc_x + margin_, job.crtc_y, job.render_x + margin_, job.render_y,
+                           0, width() - 1, 0, H - 1, tiles_alongside ? std::function<void()>(tiles) : std::function<void()>());
+            const uint64_t elapsed = ticks() - start, tile_part = profile.tile_draw + profile.composite;
+            profile.raster = elapsed > tile_part ? elapsed - tile_part : 0; // the 3D's share
+#else
             before = ticks();
-            raster_.render(polys, windows, mem, job.crtc_x, job.crtc_y, job.render_x, job.render_y, 0, W - 1, 0, H - 1);
+            raster_.render(polys, windows, mem, job.crtc_x + margin_, job.crtc_y, job.render_x + margin_, job.render_y,
+                           0, width() - 1, 0, H - 1);
             profile.raster = ticks() - before;
+#endif
+            if (margin_) coverage_ = raster_coverage();
             rendered_now_ = true;
         }
 #ifndef M2_VITA_RENDER_OPT
@@ -674,8 +706,17 @@ void Video::compose(const Job &job, VideoProfile &profile) {
         profile.tile_draw += ticks() - before;
 #endif
         before = ticks();
-        if (job.have_3d) copy_trans(raster_.pixels(), size_t(raster_.stride()), W);
-        copy_trans(sys24_.data(), W, W, 0);
+        if (margin_ && !wrap_back()) {
+            if (!job.have_3d) coverage_ = 0;
+            fill_margins();
+        }
+        if (margin_ && pillarbox_2d_ && !(job.have_3d && raster_in_margins())) {
+            black_margins();
+            if (job.have_3d) copy_trans(raster_.pixels() + margin_, size_t(raster_.stride()), W, margin_);
+        } else if (job.have_3d) {
+            copy_trans(raster_.pixels(), size_t(raster_.stride()), width());
+        }
+        copy_trans(sys24_.data(), W, W, margin_);
         profile.composite += ticks() - before;
         return;
     }
@@ -684,23 +725,21 @@ void Video::compose(const Job &job, VideoProfile &profile) {
         raster_.render(polys, windows, mem, crtc_x_ + margin_, crtc_y_, render_x_ + margin_, render_y_, 0,
                        width() - 1, 0, H - 1);
         profile.raster = ticks() - before;
-        if (margin_) { // widescreen: how much of the original screen the 3D layer covers
-            size_t covered = 0;
-            for (int y = 0; y < H; ++y) {
-                const uint32_t *row = raster_.pixels() + size_t(y) * size_t(raster_.stride()) + size_t(margin_);
-                for (int x = 0; x < W; ++x) covered += row[x] != 0;
-            }
-            coverage_ = int(covered * 100 / (size_t(W) * H));
-        }
+        if (margin_) coverage_ = raster_coverage();
         render_done_ = true;
         rendered_now_ = true;
     }
     before = ticks();
-    if (margin_) {
+    if (margin_ && !wrap_back()) {
         if (!render_done_) coverage_ = 0; // no 3D this frame: a 2D screen
         fill_margins();
     }
-    if (render_done_) copy_trans(raster_.pixels(), size_t(raster_.stride()), width());
+    if (margin_ && pillarbox_2d_ && !(render_done_ && raster_in_margins())) {
+        black_margins();
+        if (render_done_) copy_trans(raster_.pixels() + margin_, size_t(raster_.stride()), W, margin_);
+    } else if (render_done_) {
+        copy_trans(raster_.pixels(), size_t(raster_.stride()), width());
+    }
     profile.composite += ticks() - before;
 #ifndef M2_VITA_RENDER_OPT
     if (!hud_edges) {
@@ -807,6 +846,60 @@ void Video::copy_front_hud_to_edges(std::vector<uint32_t> &out) {
 // as drawn for the 496 columns is stretched across the whole width, never
 // repeated: the race sky is one 512-pixel layer whose ends do not meet, so
 // drawing it further (tried, also with split pairs) showed a seam.
+// Pen 0, then the back tilemaps (opaque layers 3 and 2, then 1 and 0) into a
+// `width`-wide bitmap: W, or 512 (the tilemaps' full width) for wrap_back.
+void Video::draw_back_layers(std::vector<uint32_t> &bitmap, int width) {
+    if (bitmap.size() < size_t(width) * (H + 4)) bitmap.resize(size_t(width) * (H + 4));
+    std::fill(bitmap.begin(), bitmap.begin() + ptrdiff_t(size_t(width) * H), pen_tab_[0]);
+    dw_ = width;
+    for (int layer = 3; layer >= 2; --layer) draw(bitmap, layer << 1, DRAW_OPAQUE);
+    for (int layer = 1; layer >= 0; --layer) draw(bitmap, layer << 1, 0);
+    dw_ = W;
+}
+
+// Widescreen with wrap_back: screen column x (0 = the left margin's edge)
+// shows tilemap column (x - margin) mod 512 of the 512-wide back layers, as
+// the hardware's scrolling would with a wider screen.
+void Video::copy_back_wrapped(const uint32_t *src) {
+    const size_t out_w = size_t(width());
+    for (int y = 0; y < H; ++y) {
+        const uint32_t *row = src + size_t(y) * 512;
+        uint32_t *out = screen_.data() + size_t(y) * out_w;
+        for (int x = 0; x < int(out_w); ++x) out[x] = row[(x - margin_) & 511];
+    }
+}
+
+// Widescreen: does the 3D layer reach into the side margins? (Not on menu
+// screens, whose few polygons stay inside the original screen.)
+bool Video::raster_in_margins() const {
+    for (int y = 0; y < H; ++y) {
+        const uint32_t *row = raster_.pixels() + size_t(y) * size_t(raster_.stride());
+        for (int x = 0; x < margin_; ++x)
+            if (row[x] | row[margin_ + W + x]) return true;
+    }
+    return false;
+}
+
+// Widescreen, pillarbox_2d: black margins (a frame with no 3D in them).
+void Video::black_margins() {
+    const size_t out = size_t(width());
+    for (int y = 0; y < H; ++y) {
+        uint32_t *row = &screen_[size_t(y) * out];
+        std::fill(row, row + margin_, rgb(0, 0, 0));
+        std::fill(row + margin_ + W, row + out, rgb(0, 0, 0));
+    }
+}
+
+// Widescreen: how much of the original screen the 3D layer covers (%).
+int Video::raster_coverage() const {
+    size_t covered = 0;
+    for (int y = 0; y < H; ++y) {
+        const uint32_t *row = raster_.pixels() + size_t(y) * size_t(raster_.stride()) + size_t(margin_);
+        for (int x = 0; x < W; ++x) covered += row[x] != 0;
+    }
+    return int(covered * 100 / (size_t(W) * H));
+}
+
 void Video::fill_margins() {
     const bool scene = this->scene();
     const int out = width();
@@ -841,15 +934,20 @@ void Video::fill_margins() {
 }
 
 void Video::set_wide_margin(int margin) {
-#ifdef M2_VITA_RENDER_OPT
+#if defined(M2_VITA_RENDER_OPT) && !defined(__SWITCH__)
     margin = 0; // the Vita compositor draws the 496-wide layers itself
 #endif
     if (external_3d_ && !desktop_) margin = 0;
     margin = std::max(margin, 0);
     if (margin == margin_) return;
+    if (threaded_) sync(); // the worker draws at the old width
     margin_ = margin;
     set_raster_hud_moves();
     screen_.assign(size_t(width()) * H, 0u);
+    if (threaded_) display_ = screen_;
+#ifdef M2_VITA_RENDER_OPT
+    background_dirty_ = true; // the cached back layers, at the new width
+#endif
     raster_.set_wide_margin(margin_);
     render_done_ = false; // redraw the 3D layer at the new width
 }

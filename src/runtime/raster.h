@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <array>
 #include <memory>
+#include <functional>
 #include <vector>
 
 namespace rt {
@@ -50,8 +51,11 @@ public:
                 int clip_minx, int clip_maxx, int clip_miny, int clip_maxy) {
         render(polys, windows, mem, crtc_x, crtc_y, crtc_x, crtc_y, clip_minx, clip_maxx, clip_miny, clip_maxy);
     }
+    // alongside (optional): other work for the calling thread, done while
+    // the workers start on the polygons (it must not touch this Raster).
     void render(const std::vector<GeoPoly> &polys, int windows, const VideoMem &mem, int crtc_x, int crtc_y, int render_x,
-                int render_y, int clip_minx, int clip_maxx, int clip_miny, int clip_maxy);
+                int render_y, int clip_minx, int clip_maxx, int clip_miny, int clip_maxy,
+                const std::function<void()> &alongside = {});
 
     const uint32_t *pixels() const { return dest_.data(); } // stride() x 512, 0x00RRGGBB
     int stride() const { return stride_; }                   // 512, wider for widescreen
@@ -101,6 +105,10 @@ private:
     std::array<ShadeEntry, 64> shades_;
     const uint32_t *shade_table(const Extra &o, ShadeEntry *shades_table = nullptr);
     std::vector<std::size_t> order_;
+    // Per drawn polygon (in order_): its projected rows, for the slices to
+    // skip it without copying or projecting it again.
+    struct RowSpan { int poly, miny, maxy; };
+    std::vector<RowSpan> spans_;
 #if defined(__SWITCH__)
     class RasterWorker;
     std::unique_ptr<RasterWorker> workers_[2];

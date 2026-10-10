@@ -3,7 +3,7 @@
 // frames go to raw dumps (scripts/rgb2png.py converts them).
 //
 //   m2run IMAGES_DIR FRAMES [--inputs scripts/inputs/X.txt] [--dump DIR --every N] [--wav FILE]
-//         [--aspect W:H [--hud-edges] [--stretch-backdrop]] [--draw-distance N] [--frame-skip N]
+//         [--aspect W:H [--hud-edges] [--stretch-backdrop] [--wrap-backdrop] [--pillarbox-2d]] [--draw-distance N] [--frame-skip N]
 //         [--native-audio-check] [--nvram DIR] [--save-nvram DIR] [--link-listen PORT --link-next HOST:PORT [--link-sync]]
 //
 // --nvram DIR starts from the app's saved settings EEPROM and backup RAM
@@ -91,10 +91,12 @@ int main(int argc, char **argv) {
     int frame_skip = 0;
     float fx_gain = 1.0f;
     std::string ram_dir; // with --every: main RAM then work RAM, raw
-    bool hud_edges = false, stretch_backdrop = false;
+    bool hud_edges = false, stretch_backdrop = false, wrap_backdrop = false, pillarbox_2d = false;
     for (int i = 3; i < argc; i++) {
         if (!std::strcmp(argv[i], "--hud-edges")) hud_edges = true;
         if (!std::strcmp(argv[i], "--stretch-backdrop")) stretch_backdrop = true;
+        if (!std::strcmp(argv[i], "--wrap-backdrop")) wrap_backdrop = true;
+        if (!std::strcmp(argv[i], "--pillarbox-2d")) pillarbox_2d = true;
         if (!std::strcmp(argv[i], "--link-sync")) link_sync = true;
         if (!std::strcmp(argv[i], "--native-audio-check")) native_check = true;
         if (!std::strcmp(argv[i], "--threaded-video")) threaded_video = true;
@@ -102,6 +104,7 @@ int main(int argc, char **argv) {
     }
     for (int i = 3; i + 1 < argc; i += 2) {
         if (!std::strcmp(argv[i], "--hud-edges") || !std::strcmp(argv[i], "--stretch-backdrop") ||
+            !std::strcmp(argv[i], "--wrap-backdrop") || !std::strcmp(argv[i], "--pillarbox-2d") ||
             !std::strcmp(argv[i], "--link-sync") || !std::strcmp(argv[i], "--native-audio-check") ||
             !std::strcmp(argv[i], "--threaded-video") || !std::strcmp(argv[i], "--p1-inf-hp")) { i--; continue; }
         if (!std::strcmp(argv[i], "--inputs")) inputs_path = argv[i + 1];
@@ -152,12 +155,15 @@ int main(int argc, char **argv) {
                     std::chrono::steady_clock::now().time_since_epoch()).count());
             };
             game.set_profile_clock(+clock);
+            game.board().video().set_profile_clock(+clock);
         }
         FILE *hashes = hashes_path.empty() ? nullptr : std::fopen(hashes_path.c_str(), "w");
         if (aspect > 0) {
             game.set_aspect(aspect);
             game.set_hud_edges(hud_edges);
             game.set_stretch_backdrop(stretch_backdrop);
+            game.set_wrap_backdrop(wrap_backdrop);
+            game.set_pillarbox_2d(pillarbox_2d);
             std::printf("m2run: screen %dx%d\n", game.screen_width(), rt::GameLoop::kHeight);
         }
         tools::Script script;
@@ -201,9 +207,10 @@ int main(int argc, char **argv) {
                 static uint64_t last_instr = 0;
                 const uint64_t instr = game.instructions() - last_instr;
                 last_instr = game.instructions();
-                std::fprintf(hashes, "%" PRIu64 " %016" PRIx64 " %.1f core=%.0f geo=%.0f sound=%.0f instr=%" PRIu64 "\n",
+                std::fprintf(hashes, "%" PRIu64 " %016" PRIx64 " %.1f core=%.0f geo=%.0f sound=%.0f instr=%" PRIu64 " raster=%.0f\n",
                              game.board().frame(), game.board().video().screen_hash(), ms, double(fp.core()) / 1000.0,
-                             double(fp.geometry) / 1000.0, double(fp.sound) / 1000.0, instr);
+                             double(fp.geometry) / 1000.0, double(fp.sound) / 1000.0, instr,
+                             double(game.board().video().last_profile().raster) / 1000.0);
             }
             if (!ram_dir.empty() && every && game.board().frame() % every == 0) {
                 char path[512];

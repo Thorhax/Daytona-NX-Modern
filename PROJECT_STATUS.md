@@ -47,6 +47,26 @@ and alternate punch/kick. Input scripts gained `p1=MASK` / `p2=MASK`
 
 ---
 
+## 2a. Widescreen (2026-10-10)
+
+Ported from the Virtual-On port (`Model2/virtualon/von-nx`, same renderer):
+16:9 by default, menu SCREEN 16:9 / 4:3. VF2 also uses the wrapped back
+tilemaps (`Video::set_wrap_backdrop`) and black side bars on menu screens
+(`Video::set_pillarbox_2d`: margins black when no 3D reaches them; VF2's
+fights are not "scenes" to `Video::scene()`, so that test is not used).
+Host: identical i960/TGP instruction counts at 4:3 and 16:9; the Switch
+render path (M2_VITA_RENDER_OPT, host build `build-vf2-vopt`) matches the
+standard path over 3,999 frames. Raster cost on the host: +24% at 16:9.
+Hardware (16:9): 307 of 309 gameplay windows at 57.52 fps; raster peaks
+~10.5 ms, tile drawing ~3.5 ms, compose ~2 ms. The two slow windows are a
+46 fps blip and one 11 fps window where geo and raster both read ~75 ms (a
+pause outside the game, e.g. the clip capture).
+Known limit: the back tilemaps are 512 px wide and the game shows 496, so
+the margins show the 16 hidden columns (which the game rewrites as it
+scrolls, often stale) and then the tilemap again from the other side. On
+some camera angles that gives a visible seam in the sky ~13 px past the 4:3
+edge, or horizon art missing in a margin. No wider source data exists.
+
 ## 2. Fixes in this round (2026-10-09)
 
 ### A. Board timers never interrupted (slow loading, missing braid)

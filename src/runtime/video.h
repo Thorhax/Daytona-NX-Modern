@@ -40,7 +40,8 @@ public:
     // the 3D on a worker while the emulation runs on. screen() is then the
     // previous update's picture: one frame of extra latency. Texture RAM is
     // read live (the game rarely writes it during a scene). Only for the
-    // plain CPU path (no widescreen, no external 3D); otherwise drawing
+    // plain CPU path (widescreen without the HUD at the edges, no external
+    // 3D); otherwise drawing
     // stays on the calling thread.
     void set_threaded(bool on);
     void sync() const; // wait for the drawing in flight
@@ -70,6 +71,20 @@ public:
     // With widescreen, behind 3D: stretch the tile backdrop across the whole
     // width (on) or fill the margins with the sky's plain colour (off, default).
     void set_stretch_backdrop(bool on) { stretch_backdrop_ = on; }
+    // With widescreen: black margins on frames whose 3D stays inside the
+    // original screen (2D menus), instead of the margin fill and any 3D there.
+    void set_pillarbox_2d(bool on) { pillarbox_2d_ = on; }
+    // With widescreen: draw the back tilemaps 512 wide (their real width) and
+    // fill the margins with them as they wrap, instead of the plain fills.
+    // For games whose 2D backdrops (skies) scroll around the full tilemap.
+    void set_wrap_backdrop(bool on) {
+        if (on == wrap_backdrop_) return;
+        if (threaded_) sync();
+        wrap_backdrop_ = on;
+#ifdef M2_VITA_RENDER_OPT
+        background_dirty_ = true;
+#endif
+    }
     // With widescreen: the race HUD's side groups (lap times; position,
     // condition panel, course map) at the screen edges instead of 4:3 centred.
     void set_hud_edges(bool on) {
@@ -231,7 +246,16 @@ private:
     // screens put their 3D in 2-3 windows, Revision A's have none, titles none.
     bool scene() const { return gpu_windows_ <= 1 && coverage_ >= 15; }
     bool stretch_backdrop_ = false;
+    bool wrap_backdrop_ = false;
+    bool pillarbox_2d_ = false;
+    bool wrap_back() const { return margin_ && wrap_backdrop_; }
+    std::vector<uint32_t> back512_;            // wrap_back: the back layers, 512 wide
+    void draw_back_layers(std::vector<uint32_t> &bitmap, int width); // pen 0, then the back layers
+    void copy_back_wrapped(const uint32_t *src);                      // 512-wide back layers -> screen_
     void fill_margins();
+    void black_margins();
+    bool raster_in_margins() const;
+    int raster_coverage() const;
     bool hud_edges_ = false;
     bool hud_on_ = false;                      // the rasterizer is moving the HUD overlay polygons
     void set_raster_hud_moves();

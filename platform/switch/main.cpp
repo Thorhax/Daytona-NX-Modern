@@ -303,6 +303,7 @@ int main(int, char **) {
         return 1;
     }
     SDL_SetTextureBlendMode(screen_texture, SDL_BLENDMODE_NONE);
+    int texture_width = rt::GameLoop::kWidth;
 
     // Open telemetry performance log file
     FILE *perf_log_file = std::fopen(kPerfLogName, "a");
@@ -346,6 +347,12 @@ int main(int, char **) {
     uint32_t previous_buttons = 0;
     bool muted = false;
     bool arcade_mono = true; // VF2: see Audio::set_arcade_mono
+#if defined(M2_ROMSET_VF2)
+    bool widescreen = true;  // 16:9: more of the stage at the sides (GameLoop::set_aspect)
+#else
+    bool widescreen = false;
+#endif
+    auto screen_aspect = [&]() { return widescreen ? 16.0 / 9.0 : 0.0; };
     std::string banner;       // short in-game message (cheat toggles)
     uint32_t banner_until = 0;
 
@@ -406,9 +413,10 @@ int main(int, char **) {
             "INSERT SERVICE COIN",
             muted ? "SOUND: MUTED" : "SOUND: ON",
             arcade_mono ? "SOUND MIX: ARCADE MONO (RECOMMENDED)" : "SOUND MIX: STEREO",
+            widescreen ? "SCREEN: 16:9 WIDESCREEN" : "SCREEN: 4:3 ORIGINAL",
             "EXIT TO HOMEBREW MENU"
         };
-        constexpr int kMenuItems = 9;
+        constexpr int kMenuItems = 10;
 #else
         switch_app::text(renderer, "DAYTONA USA RECOMP - NINTENDO SWITCH", 40, 30, 3, 40, 1);
 
@@ -520,6 +528,9 @@ int main(int, char **) {
             // Draw each picture on a worker while the next frame emulates
             // (one frame of extra latency; frees ~9 ms per frame in fights).
             game->board().video().set_threaded(true);
+            game->set_aspect(screen_aspect());
+            game->set_wrap_backdrop(true); // 2D skies continue into the margins
+            game->set_pillarbox_2d(true);  // menus (3D only inside 4:3): black side bars
 #endif
 
             load_nvram();
@@ -585,7 +596,7 @@ int main(int, char **) {
 
         if (menu && !wait_release) {
 #if defined(M2_ROMSET_VF2)
-            constexpr int kMenuItems = 9;
+            constexpr int kMenuItems = 10;
             if (pressed & switch_app::Up) selection = (selection + kMenuItems - 1) % kMenuItems;
             if (pressed & switch_app::Down) selection = (selection + 1) % kMenuItems;
             if ((pressed & switch_app::B) && game) {
@@ -634,6 +645,12 @@ int main(int, char **) {
                                          : "Stereo: the SCSP's two channels as emulated (hits panned right).";
                     break;
                 case 8:
+                    widescreen = !widescreen;
+                    if (game) game->set_aspect(screen_aspect());
+                    status = widescreen ? "Widescreen 16:9: more of the stage at the sides; the HUD stays centred."
+                                        : "Original 4:3 screen.";
+                    break;
+                case 9:
                     save();
                     running = false;
                     break;
@@ -787,12 +804,25 @@ int main(int, char **) {
                 have_frame = true;
 
                 const uint64_t before_upload = SDL_GetPerformanceCounter();
-                SDL_UpdateTexture(
-                    screen_texture,
-                    nullptr,
-                    game->screen().data(),
-                    rt::GameLoop::kWidth * int(sizeof(uint32_t))
-                );
+                if (game->screen_width() != texture_width) {
+                    // Widescreen toggled: a texture at the new width.
+                    SDL_Texture *wider = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                                           SDL_TEXTUREACCESS_STREAMING,
+                                                           game->screen_width(), rt::GameLoop::kHeight);
+                    if (wider) {
+                        SDL_DestroyTexture(screen_texture);
+                        screen_texture = wider;
+                        SDL_SetTextureBlendMode(screen_texture, SDL_BLENDMODE_NONE);
+                        texture_width = game->screen_width();
+                    }
+                }
+                if (game->screen_width() == texture_width)
+                    SDL_UpdateTexture(
+                        screen_texture,
+                        nullptr,
+                        game->screen().data(),
+                        texture_width * int(sizeof(uint32_t))
+                    );
                 const uint64_t after_upload = SDL_GetPerformanceCounter();
                 perf.span(switch_app::Performance::Upload, before_upload, after_upload);
             } catch (const std::exception &err) {
@@ -810,7 +840,7 @@ int main(int, char **) {
         SDL_RenderClear(renderer);
         if (have_frame) {
             const uint64_t before_draw = SDL_GetPerformanceCounter();
-            const int width = kDisplayHeight * rt::GameLoop::kWidth / rt::GameLoop::kHeight; // 930
+            const int width = std::min(kDisplayWidth, kDisplayHeight * texture_width / rt::GameLoop::kHeight); // 930 at 4:3
             const SDL_Rect dst{(kDisplayWidth - width) / 2, 0, width, kDisplayHeight};
             SDL_RenderCopy(renderer, screen_texture, nullptr, &dst);
             const uint64_t after_draw = SDL_GetPerformanceCounter();

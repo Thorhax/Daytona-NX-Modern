@@ -14,6 +14,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -26,7 +27,6 @@
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #include <switch.h>
 #pragma GCC diagnostic pop
-#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
@@ -225,13 +225,15 @@ uint64_t Raster::hash(int minx, int maxx, int miny, int maxy) const {
 }
 
 void Raster::render(const std::vector<GeoPoly> &polys, int windows, const VideoMem &mem, int crtc_x, int crtc_y,
-                    int render_x, int render_y, int clip_minx, int clip_maxx, int clip_miny, int clip_maxy) {
+                    int render_x, int render_y, int clip_minx, int clip_maxx, int clip_miny, int clip_maxy,
+                    const std::function<void()> &alongside) {
     mem_ = &mem;
 #ifdef M2_VITA_RENDER_OPT
     for (auto &entry : shades_) entry.key = 0xffffffffu;
-#endif
+#else
     std::fill(dest_.begin(), dest_.end(), 0u);
     std::fill(fill_.begin(), fill_.end(), u8(0));
+#endif
     // MAME: for window = cur_window..0, for z = min_z..max_z, each bucket
     // newest first.
 #ifdef M2_VITA_RENDER_OPT
@@ -246,47 +248,70 @@ void Raster::render(const std::vector<GeoPoly> &polys, int windows, const VideoM
         if (polys[a].z != polys[b].z) return polys[a].z < polys[b].z;
         return a > b;
     });
+#ifdef M2_VITA_RENDER_OPT
+    // Horizontal slices, each cleared and drawn on its own (on the Switch by
+    // this thread and two workers). The rows each polygon covers are found
+    // once, as render_one projects them, so a slice skips the rest cheaply.
+    spans_.clear();
+    for (size_t i : order) {
+        const GeoPoly &poly = polys[i];
+        if (poly.window > windows) continue;
+        int miny = 0, maxy = -1;
+        if (poly.num_vertices > 0) {
+            float min_py = 0, max_py = 0;
+            for (int k = 0; k < poly.num_vertices; k++) {
+                const GeoVertex &v = poly.v[k];
+                const float y = float((384 - poly.center[1]) + crtc_y) - (v.y / (v.p[0] + std::numeric_limits<float>::min()));
+                if (k == 0 || y < min_py) min_py = y;
+                if (k == 0 || y > max_py) max_py = y;
+            }
+            miny = round_coordinate(min_py);
+            maxy = round_coordinate(max_py);
+            if (maxy < clip_miny || miny > clip_maxy) continue;
+        } else {
+            miny = clip_miny, maxy = clip_maxy; // render_one decides
+        }
+        spans_.push_back({int(i), miny, maxy});
+    }
+    constexpr int kSliceHeight = 16;
+    const int slices = (384 + kSliceHeight - 1) / kSliceHeight;
+    std::atomic<int> next_slice{0};
+    auto do_slices = [&](ShadeEntry *thread_shades) {
+        for (;;) {
+            const int s = next_slice.fetch_add(1, std::memory_order_relaxed);
+            if (s >= slices) break;
+            const int row0 = s * kSliceHeight, row1 = std::min(384, row0 + kSliceHeight); // rows drawn or read: 0..383
+            std::fill(dest_.begin() + ptrdiff_t(size_t(row0) * size_t(stride_)),
+                      dest_.begin() + ptrdiff_t(size_t(row1) * size_t(stride_)), 0u);
+            std::fill(fill_.begin() + ptrdiff_t(size_t(row0) * size_t(stride_)),
+                      fill_.begin() + ptrdiff_t(size_t(row1) * size_t(stride_)), u8(0));
+            const int s_miny = std::max(clip_miny, row0);
+            const int s_maxy = std::min(clip_maxy, row1 - 1);
+            if (s_miny > s_maxy) continue;
+            for (const RowSpan &span : spans_) {
+                if (span.maxy < s_miny || span.miny > s_maxy) continue;
+                render_one(polys[size_t(span.poly)], crtc_x, crtc_y, render_x, render_y,
+                           clip_minx, clip_maxx, s_miny, s_maxy, thread_shades);
+            }
+        }
+    };
 #if defined(__SWITCH__)
     if (workers_[0] && workers_[1]) {
-        constexpr int kSlices = 12;
-        constexpr int kSliceHeight = 32;
-        std::atomic<int> next_slice{0};
-
-        auto do_slices = [&](ShadeEntry *thread_shades) {
-            for (;;) {
-                const int s = next_slice.fetch_add(1, std::memory_order_relaxed);
-                if (s >= kSlices) break;
-                const int s_miny = std::max(clip_miny, s * kSliceHeight);
-                const int s_maxy = std::min(clip_maxy, (s + 1) * kSliceHeight - 1);
-                if (s_miny > s_maxy) continue;
-                for (size_t i : order) {
-                    if (polys[i].window <= windows) {
-                        render_one(polys[i], crtc_x, crtc_y, render_x, render_y,
-                                   clip_minx, clip_maxx, s_miny, s_maxy, thread_shades);
-                    }
-                }
-            }
-        };
-
         for (auto &entry : worker_shades_[0]) entry.key = 0xffffffffu;
         for (auto &entry : worker_shades_[1]) entry.key = 0xffffffffu;
-
-        workers_[0]->start([&]() {
-            do_slices(worker_shades_[0].data());
-        });
-        workers_[1]->start([&]() {
-            do_slices(worker_shades_[1].data());
-        });
-
+        workers_[0]->start([&]() { do_slices(worker_shades_[0].data()); });
+        workers_[1]->start([&]() { do_slices(worker_shades_[1].data()); });
+        if (alongside) alongside(); // then help with whatever slices are left
         do_slices(shades_.data());
-
         workers_[0]->wait();
         workers_[1]->wait();
-    } else {
-        for (size_t i : order)
-            if (polys[i].window <= windows) render_one(polys[i], crtc_x, crtc_y, render_x, render_y, clip_minx, clip_maxx, clip_miny, clip_maxy);
+        return;
     }
+#endif
+    if (alongside) alongside();
+    do_slices(shades_.data());
 #else
+    if (alongside) alongside();
     for (size_t i : order)
         if (polys[i].window <= windows) render_one(polys[i], crtc_x, crtc_y, render_x, render_y, clip_minx, clip_maxx, clip_miny, clip_maxy);
 #endif
@@ -650,7 +675,7 @@ void Raster::draw_scanline_solid(int32_t y, int32_t x0, int32_t x1, const float 
 }
 
 template <bool Translucent>
-uint32_t Raster::fetch_bilinear_texel(const Extra &o, int32_t miplevel, int32_t u, int32_t v) const {
+[[gnu::always_inline]] inline uint32_t Raster::fetch_bilinear_texel(const Extra &o, int32_t miplevel, int32_t u, int32_t v) const {
 #ifdef M2_VITA_RENDER_OPT
     const auto &level = o.levels[miplevel + 1];
     const u32 tex_width = level.width, tex_height = level.height, tex_x = level.x, tex_y = level.y;
