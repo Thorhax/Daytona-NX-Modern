@@ -33,6 +33,7 @@ set(M2_ROMSET "daytona" CACHE STRING "Game to build: daytona or vf2")
 if(M2_ROMSET STREQUAL "vf2")
     set(DEFAULT_GEN_ROOT "${DAYTONA_ROOT}/build-vf2/gen")
     set(GAME_NAME "Virtua Fighter 2")
+    set(APP_VERSION "1.1.0")
     set(APP_TARGET "vf2_switch")
     set(ICON_FILE "${CMAKE_CURRENT_SOURCE_DIR}/icon_vf2.jpg")
     # Local builds may bundle the user's ROM set and NVRAM here; release builds
@@ -43,6 +44,7 @@ if(M2_ROMSET STREQUAL "vf2")
 else()
     set(DEFAULT_GEN_ROOT "${DAYTONA_ROOT}/build-daytona/gen")
     set(GAME_NAME "Daytona USA")
+    set(APP_VERSION "1.0.0")
     set(APP_TARGET "daytona_switch")
     set(ICON_FILE "${CMAKE_CURRENT_SOURCE_DIR}/icon.jpg")
     set(ROMFS_DIR "")
@@ -132,7 +134,7 @@ set(SWITCH_NACP "${CMAKE_CURRENT_BINARY_DIR}/${APP_TARGET}.nacp")
 nx_generate_nacp(OUTPUT "${SWITCH_NACP}"
     NAME "${GAME_NAME}"
     AUTHOR "Thorhax"
-    VERSION "1.0.0"
+    VERSION "${APP_VERSION}"
 )
 
 if(EXISTS "${ROMFS_DIR}")
