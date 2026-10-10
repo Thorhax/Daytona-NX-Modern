@@ -58,7 +58,8 @@ M2Board::M2Board(Images images)
       chr_(0x80000), palette_(0x4000), xlat_(0xc000), tex0_(0x200000), tex1_(0x200000), luma_(0x20000), fb_a_(0x80000),
       fb_b_(0x80000), comm_(0x4000), pages_(size_t(1) << (32 - kPageBits)), tgp_(img_.copro_tables, img_.copro_data),
       io315_(io_.inputs, io_.eeprom, io_.eeprom_dirty) {
-    is_model2a_ = (img_.program.size() > 0x100000);
+    // Model 2A (VF2) is a build-time choice: Daytona's program image is 2 MB
+    // too (padded), so the image size cannot tell the boards apart.
 #if defined(M2_ROMSET_VF2)
     is_model2a_ = true;
 #endif

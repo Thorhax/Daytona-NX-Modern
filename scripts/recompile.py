@@ -72,6 +72,8 @@ def main():
     hooks = os.path.join("seeds", args.set + "_hooks.txt")
     if os.path.exists(os.path.join(ROOT, hooks)):
         recomp += ["--hooks", hooks]
+    if args.set == "vf2":
+        recomp += ["--no-rom-mirror"]  # Model 2A: RAM at 0x220000
     run(recomp)
     tgp = os.path.join(build, "gen", args.set + "_tgp")
     os.makedirs(tgp, exist_ok=True)

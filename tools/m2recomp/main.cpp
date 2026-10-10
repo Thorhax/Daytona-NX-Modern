@@ -416,13 +416,14 @@ std::vector<uint32_t> load_seeds(const std::string &path) {
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        std::fprintf(stderr, "usage: m2recomp PROGRAM.bin OUTDIR [--seeds FILE]... [--hooks FILE] [--chunk N]\n");
+        std::fprintf(stderr, "usage: m2recomp PROGRAM.bin OUTDIR [--seeds FILE]... [--hooks FILE] [--chunk N] [--no-rom-mirror]\n");
         return 2;
     }
     const std::vector<uint8_t> img = load(argv[1]);
     const std::string out = argv[2];
     std::vector<uint32_t> seeds;
     size_t chunk = 1500;
+    bool rom_mirror = true; // Model 2A (VF2): RAM at 0x220000, no ROM mirror
     for (int i = 3; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--seeds") && i + 1 < argc) {
             auto s = load_seeds(argv[++i]);
@@ -431,6 +432,8 @@ int main(int argc, char **argv) {
             load_hooks(argv[++i]);
         } else if (!std::strcmp(argv[i], "--chunk") && i + 1 < argc) {
             chunk = std::strtoul(argv[++i], nullptr, 0);
+        } else if (!std::strcmp(argv[i], "--no-rom-mirror")) {
+            rom_mirror = false;
         }
     }
 
@@ -438,7 +441,7 @@ int main(int argc, char **argv) {
     auto read = [&](uint32_t a) -> std::optional<uint32_t> {
         uint64_t off;
         if (a < img.size()) off = a;
-        else if (img.size() <= 0x100000 && a >= 0x220000 && a < 0x240000) off = a - 0x200000;
+        else if (rom_mirror && a >= 0x220000 && a < 0x240000) off = a - 0x200000;
         else return std::nullopt;
         if (off + 4 > img.size()) return std::nullopt;
         uint32_t v;

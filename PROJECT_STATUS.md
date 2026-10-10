@@ -4,6 +4,32 @@
 
 ---
 
+## 0. Daytona USA on the shared tree (2026-10-10, testing)
+
+Working copy for Daytona: `Model2/daytona-nx` (clone of vf2-nx; origin is
+Daytona-NX-Modern). Switch build: `bash scripts/build_switch.sh` ->
+`Model2/daytona.nro` (no RomFS: the user's daytona.zip stays on the SD card).
+- Two VF2 changes broke Daytona (it hung at boot: no interrupts, no TGP):
+  the board and m2recomp took a program image over 1 MB to mean Model 2A,
+  but Daytona's image is 2 MB too. Model 2A is now `M2_ROMSET_VF2` in the
+  board, and m2recomp skips the 0x220000 ROM mirror only with
+  `--no-rom-mirror` (recompile.py passes it for vf2; VF2 output unchanged).
+- Checked against the Daytona 1.0.0 release commit (2fd6cce, worktree
+  `Model2/daytona-v100`): race_basic with the Switch app's NVRAM (single
+  cabinet), 6,000 frames, every dump identical, same i960/TGP/interrupt counts.
+- Widescreen 16:9 by default (menu SCREEN), HUD centred (HUD-at-edges is
+  off, so the video stays threaded); the margins use Daytona's existing
+  backdrop rules (plain sky in races).
+- Threaded video on Daytona too (+1 frame latency): threaded output at frame
+  N equals unthreaded N-1 over 6,000 frames (5,337 distinct pictures); the
+  Switch render path equals the standard path over 6,000 frames at 16:9.
+- Host raster (single thread) in the race: 24.4 ms mean at 4:3, 29.9 at 16:9
+  (+23%). The 1.0.0 Switch log (unthreaded) peaked at 19.9 ms raster at 4:3
+  and was under 57 fps in half its windows, so speed is the thing to check.
+- Note: `build-daytona` made by recompile.py has no build type (-O0); the
+  game's geometrizer self-test then takes minutes. Configure it with
+  `-DCMAKE_BUILD_TYPE=RelWithDebInfo`.
+
 ## 1. Working directory
 
 As of 2026-10-09 the project lives in **`/root/tmp/switch-upd/Model2/vf2-nx`**

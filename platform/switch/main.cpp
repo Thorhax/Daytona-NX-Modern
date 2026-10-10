@@ -347,11 +347,7 @@ int main(int, char **) {
     uint32_t previous_buttons = 0;
     bool muted = false;
     bool arcade_mono = true; // VF2: see Audio::set_arcade_mono
-#if defined(M2_ROMSET_VF2)
-    bool widescreen = true;  // 16:9: more of the stage at the sides (GameLoop::set_aspect)
-#else
-    bool widescreen = false;
-#endif
+    bool widescreen = true;  // 16:9: more of the scene at the sides (GameLoop::set_aspect)
     auto screen_aspect = [&]() { return widescreen ? 16.0 / 9.0 : 0.0; };
     std::string banner;       // short in-game message (cheat toggles)
     uint32_t banner_until = 0;
@@ -430,9 +426,10 @@ int main(int, char **) {
             "INSERT SERVICE COIN",
             "RESET EEPROM TO SINGLE PLAYER",
             muted ? "SOUND: MUTED" : "SOUND: ON",
+            widescreen ? "SCREEN: 16:9 WIDESCREEN" : "SCREEN: 4:3 ORIGINAL",
             "EXIT TO HOMEBREW MENU"
         };
-        constexpr int kMenuItems = 10;
+        constexpr int kMenuItems = 11;
 #endif
 
         for (int i = 0; i < kMenuItems; ++i) {
@@ -441,7 +438,7 @@ int main(int, char **) {
             } else {
                 SDL_SetRenderDrawColor(renderer, 210, 210, 220, 255);
             }
-            switch_app::text(renderer, (i == selection ? "> " : "  ") + labels[i], 60, 75 + i * 35, 2, 60, 1);
+            switch_app::text(renderer, (i == selection ? "> " : "  ") + labels[i], 60, 75 + i * (kMenuItems > 10 ? 32 : 35), 2, 60, 1);
         }
 
         SDL_SetRenderDrawColor(renderer, 180, 180, 190, 255);
@@ -531,6 +528,11 @@ int main(int, char **) {
             game->set_aspect(screen_aspect());
             game->set_wrap_backdrop(true); // 2D skies continue into the margins
             game->set_pillarbox_2d(true);  // menus (3D only inside 4:3): black side bars
+#else
+            // As VF2: draw on a worker while the next frame runs (one frame
+            // of extra latency), which pays for the wider 16:9 picture.
+            game->board().video().set_threaded(true);
+            game->set_aspect(screen_aspect()); // HUD stays centred (no HUD-at-edges)
 #endif
 
             load_nvram();
@@ -657,7 +659,7 @@ int main(int, char **) {
                 }
             }
 #else
-            constexpr int kMenuItems = 10;
+            constexpr int kMenuItems = 11;
             if (pressed & switch_app::Up) selection = (selection + kMenuItems - 1) % kMenuItems;
             if (pressed & switch_app::Down) selection = (selection + 1) % kMenuItems;
             if ((pressed & switch_app::B) && game) {
@@ -720,6 +722,12 @@ int main(int, char **) {
                     else audio.mute(muted);
                     break;
                 case 9:
+                    widescreen = !widescreen;
+                    if (game) game->set_aspect(screen_aspect());
+                    status = widescreen ? "Widescreen 16:9: more of the road at the sides; the HUD stays centred."
+                                        : "Original 4:3 screen.";
+                    break;
+                case 10:
                     save();
                     running = false;
                     break;
