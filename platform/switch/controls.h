@@ -130,8 +130,8 @@ public:
         in.brake = uint8_t(std::clamp<int>(std::lround(32.f + 192.f * brake), 0, 255));
 
         // 4-speed manual gearbox:
-        // L / R shoulders: sequential shift down / up
-        const int shift = int(bool(pressed & R)) - int(bool(pressed & L));
+        // B / X: sequential shift down / up
+        const int shift = int(bool(pressed & X)) - int(bool(pressed & B));
         gear_ = std::clamp(gear_ + shift, 1, 4);
 
         // Direct selection with D-pad when not steering
@@ -151,14 +151,14 @@ public:
         if (pad.buttons & Plus) in.in0 &= uint8_t(~0x10);
 
         // VR camera view buttons:
-        // VR1: B (bumper view)
-        if (pad.buttons & B) in.in0 &= uint8_t(~0x20);
+        // VR1: L (bumper view)
+        if (pad.buttons & L) in.in0 &= uint8_t(~0x20);
         // VR2: A (chase view)
         if (pad.buttons & A) in.in0 &= uint8_t(~0x40);
         // VR3: Y (far chase view)
         if (pad.buttons & Y) in.in0 &= uint8_t(~0x80);
-        // VR4: X (cockpit view)
-        if (pad.buttons & X) in.in1 &= uint8_t(~0x01);
+        // VR4: R (cockpit view)
+        if (pad.buttons & R) in.in1 &= uint8_t(~0x01);
 
         return in;
     }

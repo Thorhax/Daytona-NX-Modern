@@ -451,9 +451,9 @@ int main(int, char **) {
         switch_app::text(renderer, "TEST MODE: X=UP  B=DOWN  Y=OPT+  A=OPT-  PLUS=SELECT", 40, 550, 2, 70, 1);
         switch_app::text(renderer, "PLUS=START   MINUS=COIN   PLUS+MINUS=MENU", 40, 580, 2, 70, 1);
 #else
-        switch_app::text(renderer, "CONTROLS: ZR=GAS  ZL=BRAKE  L/R=SHIFT  L3=TEST  R3=SERVICE", 40, 490, 2, 70, 1);
-        switch_app::text(renderer, "TEST MODE: X=UP  B=DOWN  Y=OPT+  A=OPT-  PLUS=SELECT", 40, 520, 2, 70, 1);
-        switch_app::text(renderer, "VR VIEWS: B=BUMPER  A=CHASE  Y=FAR  X=COCKPIT", 40, 550, 2, 70, 1);
+        switch_app::text(renderer, "CONTROLS: ZR=GAS  ZL=BRAKE  X=SHIFT UP  B=SHIFT DOWN  L3=TEST  R3=SERVICE", 40, 490, 2, 70, 1);
+        switch_app::text(renderer, "TEST MODE: R=UP  L=DOWN  Y=OPT+  A=OPT-  PLUS=SELECT", 40, 520, 2, 70, 1);
+        switch_app::text(renderer, "VR VIEWS: L=BUMPER  A=CHASE  Y=FAR  R=COCKPIT", 40, 550, 2, 70, 1);
         switch_app::text(renderer, "PLUS=START   MINUS=COIN   PLUS+MINUS=MENU", 40, 580, 2, 70, 1);
 #endif
 
@@ -546,7 +546,7 @@ int main(int, char **) {
 #if defined(M2_ROMSET_VF2)
             status = "B: PUNCH  A: KICK  Y: GUARD  X: GUARD+KICK  PLUS: START  MINUS: COIN  ZL+ZR+UP: CHEAT";
 #else
-            status = "ZR: GAS   ZL: BRAKE   L/R: SHIFT   L-STICK: STEER   PLUS: START   MINUS: COIN";
+            status = "ZR: GAS   ZL: BRAKE   X/B: SHIFT UP/DOWN   L-STICK: STEER   PLUS: START   MINUS: COIN";
 #endif
             clock.reset();
             perf.reset(SDL_GetPerformanceCounter(), menu);
