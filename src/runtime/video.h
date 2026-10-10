@@ -237,6 +237,7 @@ private:
     int margin_ = 0;
     int dw_ = W;                               // draw()'s output width
     std::vector<uint32_t> stretch_row_;        // widescreen: one backdrop row, for stretching
+    std::vector<uint32_t> stretch_map_;        // per output column: source column << 9 | weight (0-256) of the next
     int coverage_ = 100;                       // widescreen: % of the screen the last 3D render covered
     // Widescreen: is this frame a 3D scene (race, attract) rather than a 2D
     // screen (titles, car and circuit select)? Scenes draw in one window and

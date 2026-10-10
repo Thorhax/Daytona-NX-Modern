@@ -905,22 +905,26 @@ void Video::fill_margins() {
     const int out = width();
     const uint32_t sky = screen_[size_t(margin_)];
     if (scene && stretch_backdrop_) {
-        stretch_row_.resize(size_t(W));
+        stretch_row_.resize(size_t(W) + 1);
+        if (stretch_map_.size() != size_t(out)) {
+            // out column x samples backdrop column (x + 0.5) * W / out - 0.5, blended
+            stretch_map_.resize(size_t(out));
+            for (int x = 0; x < out; ++x) {
+                const float u = std::clamp((float(x) + 0.5f) * float(W) / float(out) - 0.5f, 0.0f, float(W - 1));
+                const int i = int(u);
+                stretch_map_[size_t(x)] = uint32_t(i) << 9 | uint32_t((u - float(i)) * 256.0f + 0.5f);
+            }
+        }
         for (int y = 0; y < H; ++y) {
             uint32_t *row = &screen_[size_t(y) * size_t(out)];
             std::copy_n(row + margin_, W, stretch_row_.data());
+            stretch_row_[size_t(W)] = stretch_row_[size_t(W - 1)]; // column W-1 blends with itself
             for (int x = 0; x < out; ++x) {
-                // out column x samples backdrop column (x + 0.5) * W / out - 0.5, blended
-                const float u = std::clamp((float(x) + 0.5f) * float(W) / float(out) - 0.5f, 0.0f, float(W - 1));
-                const int i = int(u), j = std::min(i + 1, W - 1);
-                const float f = u - float(i);
-                const uint32_t a = stretch_row_[size_t(i)], b = stretch_row_[size_t(j)];
-                uint32_t p = 0;
-                for (int k = 0; k < 24; k += 8) {
-                    const float c = float((a >> k) & 0xff) * (1.0f - f) + float((b >> k) & 0xff) * f;
-                    p |= uint32_t(c + 0.5f) << k;
-                }
-                row[x] = p | (a & 0xff000000u);
+                const uint32_t m = stretch_map_[size_t(x)], i = m >> 9, f = m & 0x1ff, g = 256 - f;
+                const uint32_t a = stretch_row_[i], b = stretch_row_[i + 1];
+                const uint32_t rb = (((a & 0xff00ffu) * g + (b & 0xff00ffu) * f + 0x800080u) >> 8) & 0xff00ffu;
+                const uint32_t gc = (((a & 0x00ff00u) * g + (b & 0x00ff00u) * f + 0x008000u) >> 8) & 0x00ff00u;
+                row[x] = rb | gc | (a & 0xff000000u);
             }
         }
         return;

@@ -533,6 +533,8 @@ int main(int, char **) {
             // of extra latency), which pays for the wider 16:9 picture.
             game->board().video().set_threaded(true);
             game->set_aspect(screen_aspect()); // HUD stays centred (no HUD-at-edges)
+            game->set_stretch_backdrop(true);  // race sky stretched across 16:9 (its ends do not meet, so no wrap)
+            game->set_pillarbox_2d(true);      // 2D screens (GENTLEMEN START YOUR ENGINES...): black side bars
 #endif
 
             load_nvram();

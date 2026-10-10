@@ -26,6 +26,15 @@ Daytona-NX-Modern). Switch build: `bash scripts/build_switch.sh` ->
 - Host raster (single thread) in the race: 24.4 ms mean at 4:3, 29.9 at 16:9
   (+23%). The 1.0.0 Switch log (unthreaded) peaked at 19.9 ms raster at 4:3
   and was under 57 fps in half its windows, so speed is the thing to check.
+- Hardware test 1 (16:9): 62 of 62 gameplay windows at 57.52 fps, raster
+  peak 7.2 ms. Smearing at the sides: GENTLEMEN START YOUR ENGINES (a 2D
+  screen: row edge colours carried out) and the race start, where the clouds
+  ended at the 4:3 edge over plain sky. Now the Switch sets
+  `set_stretch_backdrop` (the race sky stretched across 16:9; wrapping it
+  shows a seam, see fill_margins) and `set_pillarbox_2d` (2D screens: black
+  side bars). The stretch is integer now (weights per column, at most 1 off
+  the old float result in 2,047 bytes over 60 frames). Threaded Switch path =
+  standard path over 6,000 frames with both options.
 - Note: `build-daytona` made by recompile.py has no build type (-O0); the
   game's geometrizer self-test then takes minutes. Configure it with
   `-DCMAKE_BUILD_TYPE=RelWithDebInfo`.
