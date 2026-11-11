@@ -15,6 +15,11 @@ X shift up, B shift down (D-pad Up/Down: 4th/1st), views L bumper, A chase,
 Y far, R cockpit; Plus start, Minus coin, Plus+Minus menu, L3 test,
 R3 service. In test mode R/L move the cursor.
 
+Steering: menu STEERING sets the left stick's response curve (SHARP linear,
+MEDIUM, SMOOTH the default, VERY SMOOTH). Small movements turn less, full
+stick is still full lock; the D-pad always steers at full lock. The setting
+is kept in `sdmc:/switch/daytona/steering.bin`.
+
 Widescreen: 16:9 by default (menu SCREEN 16:9 / 4:3). More of the road at
 the sides with the HUD centred; the race sky is stretched across the width
 and 2D screens get black side bars. With 16:9 the game draws every scenery

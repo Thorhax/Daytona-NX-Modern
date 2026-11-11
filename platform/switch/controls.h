@@ -108,9 +108,14 @@ public:
         }
 
         // Steering: Left stick X
+        // Response curve (menu STEERING): |x|^k after the deadzone, so full
+        // stick is still full lock but small movements turn less.
         float steer = pad.lx;
         if (std::abs(steer) < 0.12f) steer = 0.0f;
-        else steer = std::copysign((std::abs(steer) - 0.12f) / 0.88f, steer);
+        else {
+            const float x = std::min((std::abs(steer) - 0.12f) / 0.88f, 1.0f);
+            steer = std::copysign(std::pow(x, kSteerCurves[steer_curve_]), steer);
+        }
 
         if (pad.buttons & Left) steer = -1.0f;
         if (pad.buttons & Right) steer = 1.0f;
@@ -164,6 +169,16 @@ public:
     }
 #endif
 
+#if !defined(M2_ROMSET_VF2)
+    // Steering response: 0 sharp (linear, the 1.1.0 behaviour) .. 3 very smooth.
+    static constexpr int kSteerCurveCount = 4;
+    static constexpr float kSteerCurves[kSteerCurveCount] = {1.0f, 1.5f, 2.0f, 2.6f};
+    static constexpr const char *kSteerCurveNames[kSteerCurveCount] = {
+        "SHARP (LINEAR)", "MEDIUM", "SMOOTH (DEFAULT)", "VERY SMOOTH"};
+    int steer_curve() const { return steer_curve_; }
+    void set_steer_curve(int c) { steer_curve_ = std::clamp(c, 0, kSteerCurveCount - 1); }
+#endif
+
     void latch(uint32_t buttons) { held_ = buttons; }
     int gear() const { return gear_; }
 
@@ -174,6 +189,9 @@ private:
     }
     uint32_t held_ = 0;
     int gear_ = 1;
+#if !defined(M2_ROMSET_VF2)
+    int steer_curve_ = 2;
+#endif
 };
 
 class FrameClock {

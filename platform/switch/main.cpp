@@ -323,6 +323,12 @@ int main(int, char **) {
 
     std::unique_ptr<rt::GameLoop> game;
     switch_app::Controls controls;
+#if !defined(M2_ROMSET_VF2)
+    {
+        uint8_t curve = uint8_t(controls.steer_curve());
+        if (load_bytes("steering.bin", &curve, 1)) controls.set_steer_curve(curve);
+    }
+#endif
     // Allow up to 2 steps catchup if vsync is engaged
     switch_app::FrameClock clock(rt::GameLoop::kFrameHz, 2);
 
@@ -427,9 +433,10 @@ int main(int, char **) {
             "RESET EEPROM TO SINGLE PLAYER",
             muted ? "SOUND: MUTED" : "SOUND: ON",
             widescreen ? "SCREEN: 16:9 WIDESCREEN" : "SCREEN: 4:3 ORIGINAL",
+            std::string("STEERING: ") + switch_app::Controls::kSteerCurveNames[controls.steer_curve()],
             "EXIT TO HOMEBREW MENU"
         };
-        constexpr int kMenuItems = 11;
+        constexpr int kMenuItems = 12;
 #endif
 
         for (int i = 0; i < kMenuItems; ++i) {
@@ -438,7 +445,7 @@ int main(int, char **) {
             } else {
                 SDL_SetRenderDrawColor(renderer, 210, 210, 220, 255);
             }
-            switch_app::text(renderer, (i == selection ? "> " : "  ") + labels[i], 60, 75 + i * (kMenuItems > 10 ? 32 : 35), 2, 60, 1);
+            switch_app::text(renderer, (i == selection ? "> " : "  ") + labels[i], 60, 75 + i * (kMenuItems > 11 ? 29 : kMenuItems > 10 ? 32 : 35), 2, 60, 1);
         }
 
         SDL_SetRenderDrawColor(renderer, 180, 180, 190, 255);
@@ -664,7 +671,7 @@ int main(int, char **) {
                 }
             }
 #else
-            constexpr int kMenuItems = 11;
+            constexpr int kMenuItems = 12;
             if (pressed & switch_app::Up) selection = (selection + kMenuItems - 1) % kMenuItems;
             if (pressed & switch_app::Down) selection = (selection + 1) % kMenuItems;
             if ((pressed & switch_app::B) && game) {
@@ -733,7 +740,16 @@ int main(int, char **) {
                     status = widescreen ? "Widescreen 16:9: more of the road at the sides; the HUD stays centred."
                                         : "Original 4:3 screen.";
                     break;
-                case 10:
+                case 10: {
+                    controls.set_steer_curve((controls.steer_curve() + 1) % switch_app::Controls::kSteerCurveCount);
+                    const uint8_t curve = uint8_t(controls.steer_curve());
+                    save_bytes("steering.bin", &curve, 1);
+                    status = controls.steer_curve() == 0
+                        ? "Steering: linear, as before. Full stick is full lock on every setting."
+                        : "Steering: smoother near the centre for finer control. Full stick is still full lock.";
+                    break;
+                }
+                case 11:
                     save();
                     running = false;
                     break;
