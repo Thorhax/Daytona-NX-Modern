@@ -5,7 +5,8 @@ No game data is in this repository or in the release: put your own MAME
 `daytona.zip` (Revision A) at `sdmc:/switch/daytona/daytona.zip` next to
 `daytona.nro`.
 
-Switch build (devkitPro, or Docker with `devkitpro-mesa-rust:latest`):
+Switch build (devkitPro, or Docker with `devkitpro/devkita64:latest`;
+set `SWITCH_DOCKER_IMAGE` to use another image):
 
     python3 scripts/recompile.py --set daytona --build-dir build-daytona   # needs roms/daytona.zip
     bash scripts/build_switch.sh

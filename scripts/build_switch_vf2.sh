@@ -7,11 +7,12 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 echo "== Building Virtua Fighter 2 for Nintendo Switch =="
 
 if [ -z "$DEVKITPRO" ]; then
-    echo "DEVKITPRO not set, running via Docker (devkitpro-mesa-rust:latest)..."
+    IMAGE="${SWITCH_DOCKER_IMAGE:-devkitpro/devkita64:latest}"
+    echo "DEVKITPRO not set, running via Docker (${IMAGE})..."
     docker run --rm \
         -v "${ROOT_DIR}/..":/work \
         -w "/work/$(basename "${ROOT_DIR}")" \
-        devkitpro-mesa-rust:latest \
+        "${IMAGE}" \
         bash -c "export PATH=/opt/devkitpro/devkitA64/bin:/opt/devkitpro/tools/bin:\$PATH && \
                  cmake -S platform/switch -B build-switch-vf2 -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake -DCMAKE_BUILD_TYPE=Release -DM2_ROMSET=vf2 && \
                  cmake --build build-switch-vf2 -j\$(nproc)"

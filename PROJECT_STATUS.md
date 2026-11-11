@@ -47,8 +47,9 @@ Daytona-NX-Modern). Switch build: `bash scripts/build_switch.sh` ->
   deadzone the stick is |x|^k, k = 1.0 / 1.5 / 2.0 / 2.6, default 2.0;
   full stick is still full lock (steer 0x20..0xe0). Half stick: 43% of lock
   before, 19% now. Saved in steering.bin (one byte). The NRO was built with
-  the `devkitpro/devkita64` image (`devkitpro-mesa-rust` is no longer on
-  this machine).
+  the `devkitpro/devkita64` image, now the default in build_switch.sh and
+  build_switch_vf2.sh (`devkitpro-mesa-rust` is no longer on this machine;
+  SWITCH_DOCKER_IMAGE overrides it).
 - Note: `build-daytona` made by recompile.py has no build type (-O0); the
   game's geometrizer self-test then takes minutes. Configure it with
   `-DCMAKE_BUILD_TYPE=RelWithDebInfo`.
